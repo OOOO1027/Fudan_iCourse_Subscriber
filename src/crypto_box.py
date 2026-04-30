@@ -62,9 +62,21 @@ def _derive_key_iv(password: str, salt: bytes,
 
 
 def encrypt(plaintext: bytes, password: str,
-            iterations: int = NEW_ITERATIONS) -> bytes:
-    """Encrypt with random salt. Returns full OpenSSL envelope."""
-    salt = os.urandom(SALT_SIZE)
+            iterations: int = NEW_ITERATIONS,
+            deterministic: bool = False) -> bytes:
+    """Encrypt with random salt by default. Returns full OpenSSL envelope.
+
+    With ``deterministic=True`` the salt is derived from
+    ``sha256(plaintext)[:8]`` instead of ``os.urandom(8)``.  Same
+    ``(password, plaintext)`` then always produces the same ciphertext, so
+    unchanged content keeps its git blob sha across deploys — letting the
+    frontend's content-addressed shard cache actually hit.  Used by sharder
+    for shard files + index.
+    """
+    if deterministic:
+        salt = hashlib.sha256(plaintext).digest()[:SALT_SIZE]
+    else:
+        salt = os.urandom(SALT_SIZE)
     key, iv = _derive_key_iv(password, salt, iterations)
     cipher = AES.new(key, AES.MODE_CBC, iv)
     ct = cipher.encrypt(pad(plaintext, AES.block_size))

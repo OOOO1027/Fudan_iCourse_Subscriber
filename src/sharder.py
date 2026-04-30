@@ -215,8 +215,10 @@ def shard_database(
         finally:
             os.unlink(tmp_path)
 
-        gzipped = gzip.compress(raw, compresslevel=9)
-        encrypted = crypto_box.encrypt(gzipped, password)
+        # mtime=0 keeps gzip output deterministic (default writes wall-clock
+        # into the header, breaking content-addressed caching downstream).
+        gzipped = gzip.compress(raw, compresslevel=9, mtime=0)
+        encrypted = crypto_box.encrypt(gzipped, password, deterministic=True)
         sha256 = hashlib.sha256(encrypted).hexdigest()
 
         with open(shard_path, "wb") as f:
@@ -236,7 +238,7 @@ def shard_database(
     index_bytes = json.dumps(
         index, separators=(",", ":"), sort_keys=True,
     ).encode("utf-8")
-    encrypted_index = crypto_box.encrypt(index_bytes, password)
+    encrypted_index = crypto_box.encrypt(index_bytes, password, deterministic=True)
     with open(os.path.join(output_dir, INDEX_FILENAME), "wb") as f:
         f.write(encrypted_index)
 
