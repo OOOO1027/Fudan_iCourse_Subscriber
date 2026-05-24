@@ -262,8 +262,8 @@ UI_NOISE_LINE_PATTERNS: list[str] = [
     r"^☆.{4,}.+$",
     # Document window title: "...docx - Word", "...pptx - PowerPoint",
     # also ".ppt[兼容模式]-PowerPoint" and ".ppt - PowerPoint"
-    r"^.*\.docx[^-]*[-(（\s]*Word.*$",
-    r"^.*\.pptx?[^-]*[-(（\s]*PowerPoint.*$",
+    r"^.*[.·]?docx[^-]*[-(（\s]*Word.*$",
+    r"^.*[.·]?pptx?[^-]*[-(（\s]*PowerPoint.*$",
     # PPT placeholder text
     r"^单击此处添加(?:备注|标题|副标题|正文)$",
     # Standalone PPT placeholder labels (appear in thumbnail sidebar / master view)
