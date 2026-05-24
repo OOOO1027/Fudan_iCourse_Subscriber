@@ -67,11 +67,9 @@ jobs:
       - name: Fetch database from data branch
         run: |
           mkdir -p data
-          git fetch --depth=1 origin refs/heads/data:refs/remotes/origin/data 2>/dev/null \
+          git fetch --depth=1 origin "+refs/heads/data:refs/remotes/origin/data" 2>/dev/null \
             || { echo "No data branch, starting fresh."; exit 0; }
-          git show origin/data:data/icourse-index.enc >/dev/null 2>&1 \
-            || git show origin/data:data/icourse.db.gz.enc >/dev/null 2>&1 \
-            || git show origin/data:data/icourse.db.enc >/dev/null 2>&1 \
+          git ls-tree origin/data --name-only data/ | grep -q . \
             || { echo "No database found on data branch, starting fresh."; exit 0; }
           if git cat-file -e origin/data:data/icourse-index.enc 2>/dev/null; then
             mkdir -p data/sharded/shards

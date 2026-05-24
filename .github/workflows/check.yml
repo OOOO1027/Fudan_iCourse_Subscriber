@@ -65,14 +65,21 @@ jobs:
       - name: Fetch database from data branch
         run: |
           mkdir -p data
-          git fetch --depth=1 origin refs/heads/data:refs/remotes/origin/data 2>/dev/null \
+          # Force-fetch (+refspec) so non-fast-forward updates from
+          # force-pushed data branches are picked up (shallow clone
+          # otherwise refuses to overwrite the stale tracking ref).
+          git fetch --depth=1 origin "+refs/heads/data:refs/remotes/origin/data" 2>/dev/null \
             || { echo "No data branch, starting fresh."; exit 0; }
-          git show origin/data:data/icourse-index.enc >/dev/null 2>&1 \
-            || git show origin/data:data/icourse.db.gz.enc >/dev/null 2>&1 \
-            || git show origin/data:data/icourse.db.enc >/dev/null 2>&1 \
+          # Use ls-tree (reads tree directly) instead of cat-file
+          # (requires fetched blobs) in case the shallow clone hasn't
+          # fetched every blob object yet.
+          git ls-tree origin/data --name-only data/ | grep -q . \
             || { echo "No database found on data branch, starting fresh."; exit 0; }
-          # Prefer the sharded layout (current).
-          if git cat-file -e origin/data:data/icourse-index.enc 2>/dev/null; then
+          # Determine format from tree listing (ls-tree reads tree
+          # objects directly without needing the blobs fetched).
+          files=$(git ls-tree origin/data --name-only data/ | tr '\n' ' ')
+          echo "Data branch files: $files"
+          if echo "$files" | grep -q "icourse-index.enc"; then
             mkdir -p data/sharded/shards
             git show origin/data:data/icourse-index.enc > data/sharded/icourse-index.enc
             shard_paths=$(git ls-tree -r --name-only origin/data | grep '^data/shards/' || true)
@@ -81,10 +88,10 @@ jobs:
               git show "origin/data:$path" > "data/sharded/shards/$base"
             done
             echo "Loaded $(ls data/sharded/shards 2>/dev/null | wc -l) shard(s)."
-          elif git cat-file -e origin/data:data/icourse.db.gz.enc 2>/dev/null; then
+          elif echo "$files" | grep -q "icourse.db.gz.enc"; then
             git show origin/data:data/icourse.db.gz.enc > data/icourse.db.gz.enc
             echo "Loaded legacy compressed database."
-          elif git cat-file -e origin/data:data/icourse.db.enc 2>/dev/null; then
+          elif echo "$files" | grep -q "icourse.db.enc"; then
             git show origin/data:data/icourse.db.enc > data/icourse.db.enc
             echo "Loaded legacy uncompressed database."
           else
