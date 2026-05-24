@@ -1,32 +1,79 @@
 /**
- * sql.js wrapper — load, query, and export the iCourse SQLite database.
- * Sets window.ICS.db global.
+ * sql.js wrapper — load lecture data from sharded encrypted shards.
+ *
+ * In the sharded layout (current), each shard is a self-contained sqlite
+ * file holding only the courses + lectures + ppt_pages rows for the courses
+ * it owns. The page reassembles them in-memory by copying every shard's
+ * rows into a single working SQL.Database. This avoids ATTACH'ing across
+ * sql.js DB instances — sql.js doesn't support cross-file ATTACH cleanly,
+ * and the row-count is small enough that copying is instantaneous.
  */
 
 window.ICS = window.ICS || {};
 
 const _SQL_CDN = "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0";
 let _db = null;
+let _SQL = null;
 
-async function _initDB(dbBytes) {
-  const SQL = await window.initSqlJs({
-    locateFile: (file) => `${_SQL_CDN}/${file}`,
-  });
-  _db = dbBytes ? new SQL.Database(dbBytes) : new SQL.Database();
+function _schemaSql() {
+  // schema.js loads before this file via index.html and registers the SQL
+  // on window.ICS.schema so backend (src/schema.py) and frontend share one
+  // source of truth.  Throw early if it's missing — silent NULL would
+  // produce "no such table" later, which is a worse failure mode.
+  var s = window.ICS && window.ICS.schema && window.ICS.schema.SCHEMA_SQL;
+  if (!s) throw new Error("ICS.schema.SCHEMA_SQL missing — load js/schema.js first");
+  return s;
 }
 
-function _ensureSchema() {
-  if (!_db) return;
-  const existing = new Set(
-    (_db.exec("PRAGMA table_info(lectures)")[0]?.values || []).map((r) => r[1])
+async function _ensureSqlJs() {
+  if (_SQL) return _SQL;
+  _SQL = await window.initSqlJs({
+    locateFile: (file) => `${_SQL_CDN}/${file}`,
+  });
+  return _SQL;
+}
+
+async function _initFromBytes(dbBytes) {
+  // Legacy path — accepts a single monolithic sqlite file.
+  // Kept so older deployments (pre-shard data branch) still load.
+  const SQL = await _ensureSqlJs();
+  _db = dbBytes ? new SQL.Database(dbBytes) : new SQL.Database();
+  if (!dbBytes) _db.exec(_schemaSql());
+}
+
+async function _initEmpty() {
+  const SQL = await _ensureSqlJs();
+  _db = new SQL.Database();
+  _db.exec(_schemaSql());
+}
+
+function _copyRows(src, dst, table) {
+  const result = src.exec(`SELECT * FROM ${table}`);
+  if (!result.length || !result[0].values.length) return;
+  const cols = result[0].columns;
+  const placeholders = cols.map(() => "?").join(",");
+  const stmt = dst.prepare(
+    `INSERT OR IGNORE INTO ${table} (${cols.join(",")}) VALUES (${placeholders})`
   );
-  for (const [col, typedef] of [
-    ["error_msg", "TEXT"],
-    ["error_count", "INTEGER DEFAULT 0"],
-    ["error_stage", "TEXT"],
-    ["summary_model", "TEXT"],
-  ]) {
-    if (!existing.has(col)) _db.run(`ALTER TABLE lectures ADD COLUMN ${col} ${typedef}`);
+  for (const row of result[0].values) {
+    stmt.bind(row);
+    stmt.step();
+    stmt.reset();
+  }
+  stmt.free();
+}
+
+async function _attachShard(shardBytes) {
+  if (!_db) throw new Error("Database not initialized");
+  const SQL = await _ensureSqlJs();
+  const shard = new SQL.Database(shardBytes);
+  try {
+    _copyRows(shard, _db, "courses");
+    _copyRows(shard, _db, "lectures");
+    _copyRows(shard, _db, "ppt_pages");
+    _copyRows(shard, _db, "all_courses");
+  } finally {
+    shard.close();
   }
 }
 
@@ -84,34 +131,80 @@ function _getLecture(subId) {
   return rows[0];
 }
 
+function _getPptPages(subId) {
+  // Only return done pages with non-empty text — keeps the PPT viewer
+  // free of pending placeholders and dropped pages.
+  return _queryAll(`
+    SELECT page_num, created_sec, text
+    FROM ppt_pages
+    WHERE sub_id = ? AND ocr_status = 'done'
+      AND text IS NOT NULL AND text != ''
+    ORDER BY created_sec ASC
+  `, [subId]);
+}
+
 function _searchSummaries(query) {
   if (!query?.trim()) return [];
+  // Match against summary, transcript, and sub_title.  Transcript is the
+  // most useful for "I remember the teacher said X" lookups; summary
+  // covers "I read it in the notes"; sub_title covers session names.
+  // We mark which field hit so the UI can show the right snippet.
+  const q = query;
   return _queryAll(`
-    SELECT l.sub_id, l.sub_title, l.summary, l.course_id, c.title AS course_title
+    SELECT l.sub_id, l.sub_title, l.summary, l.transcript,
+           l.course_id, c.title AS course_title,
+           CASE
+             WHEN l.summary    LIKE '%' || ? || '%' THEN 'summary'
+             WHEN l.sub_title  LIKE '%' || ? || '%' THEN 'sub_title'
+             WHEN l.transcript LIKE '%' || ? || '%' THEN 'transcript'
+             ELSE 'other'
+           END AS hit_field
     FROM lectures l JOIN courses c ON l.course_id = c.course_id
-    WHERE l.summary LIKE '%' || ? || '%' OR l.sub_title LIKE '%' || ? || '%'
+    WHERE l.summary    LIKE '%' || ? || '%'
+       OR l.sub_title  LIKE '%' || ? || '%'
+       OR l.transcript LIKE '%' || ? || '%'
     ORDER BY l.processed_at DESC LIMIT 50
-  `, [query, query]);
+  `, [q, q, q, q, q, q]);
 }
 
-function _updateSummary(subId, newSummary) {
-  if (!_db) throw new Error("Database not loaded");
-  _db.run("UPDATE lectures SET summary = ?, summary_model = 'manual-edit' WHERE sub_id = ?",
-    [newSummary, subId]);
+function _getAllCourses(term) {
+  // Catalog of every course offered by the school for ``term`` (or all
+  // terms if undefined).  Populated by main.py's CRAWL_TERM-driven crawl;
+  // empty until that env var has been set at least once on the CI side.
+  if (term) {
+    return _queryAll(
+      "SELECT * FROM all_courses WHERE term = ? ORDER BY title",
+      [term],
+    );
+  }
+  return _queryAll(
+    "SELECT * FROM all_courses ORDER BY term DESC, title"
+  );
 }
 
-function _exportDB() {
-  if (!_db) throw new Error("Database not loaded");
-  return _db.export();
+function _getAllCoursesTerms() {
+  return _queryAll(
+    "SELECT DISTINCT term FROM all_courses ORDER BY term DESC"
+  ).map((r) => r.term);
+}
+
+function _getSubscribedCourseIds() {
+  // The ``courses`` table holds courses we've actually run.  This is our
+  // best signal of "currently subscribed" without reading the
+  // COURSE_IDS secret (which GitHub never exposes back).
+  return _queryAll("SELECT course_id FROM courses").map((r) => r.course_id);
 }
 
 window.ICS.db = {
-  initDB: _initDB,
-  ensureSchema: _ensureSchema,
+  initDB: _initFromBytes,
+  initEmpty: _initEmpty,
+  attachShard: _attachShard,
   getCourses: _getCourses,
   getLectures: _getLectures,
   getLecture: _getLecture,
+  getPptPages: _getPptPages,
   searchSummaries: _searchSummaries,
-  updateSummary: _updateSummary,
-  exportDB: _exportDB,
+  getAllCourses: _getAllCourses,
+  getAllCoursesTerms: _getAllCoursesTerms,
+  getSubscribedCourseIds: _getSubscribedCourseIds,
 };

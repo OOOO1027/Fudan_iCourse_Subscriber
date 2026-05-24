@@ -5,6 +5,12 @@ on:
     branches: [main]
     paths: ['frontend/**']
   workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy frontend from (e.g. main, dev)"
+        required: true
+        default: "main"
+        type: string
 
 permissions:
   contents: read
@@ -22,7 +28,12 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # On manual dispatch we honour the ``branch`` input; for the auto
+      # push trigger this resolves to '' and actions/checkout falls back
+      # to the triggering ref (i.e. main per the push filter above).
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch || github.ref }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

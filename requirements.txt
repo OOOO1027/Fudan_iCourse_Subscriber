@@ -5,4 +5,7 @@ numpy
 openai
 pillow
 markdown
+psutil
 pygments
+rapidocr-onnxruntime
+imagehash
