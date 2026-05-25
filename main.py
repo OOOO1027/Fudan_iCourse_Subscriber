@@ -31,7 +31,7 @@ from src.ai.transcriber import Transcriber
 from src.api.webvpn import WebVPNSession
 
 
-def login_with_retry(max_attempts: int = 5) -> WebVPNSession:
+def login_with_retry(max_attempts: int = 3) -> WebVPNSession:
     """Login to WebVPN + iCourse CAS, retrying on transient failures."""
     for attempt in range(max_attempts):
         try:

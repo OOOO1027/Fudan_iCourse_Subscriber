@@ -199,19 +199,21 @@ class WebVPNSession:
         vpn_url = get_vpn_url(casapi_url)
 
         # Follow redirect chain to reach IDP login page and extract lck.
-        # The CAS gateway occasionally returns 200 + an HTML interstitial
-        # instead of a 302 chain — retry a few times before giving up so
-        # we don't force a full WebVPN re-login for a transient hiccup.
+        # One fast retry handles transient CAS 200 responses; if it still
+        # fails, let login_with_retry() do a full WebVPN re-login instead.
         import time as _time
         lck = None
-        for cas_attempt in range(3):
+        for cas_attempt in range(2):
             if cas_attempt > 0:
                 _time.sleep(2)
-                print(f"    CAS lck extract retry {cas_attempt}/2...")
-            resp = self.session.get(vpn_url, allow_redirects=False, timeout=60)
+            resp = self.session.get(vpn_url, allow_redirects=False, timeout=15)
             for _ in range(15):
                 location = resp.headers.get("Location", "")
                 if resp.status_code not in (301, 302, 303, 307) or not location:
+                    break
+                # WebVPN returning /login means the session is stale —
+                # don't waste time fetching the heavy login page.
+                if "/login" in location:
                     break
                 lck_match = re.search(r'lck=([^&#"]+)', location)
                 if lck_match:
@@ -220,7 +222,7 @@ class WebVPNSession:
                 if not location.startswith("http"):
                     location = urljoin(resp.url, location)
                 resp = self.session.get(
-                    location, allow_redirects=False, timeout=60
+                    location, allow_redirects=False, timeout=10
                 )
             if lck:
                 break
