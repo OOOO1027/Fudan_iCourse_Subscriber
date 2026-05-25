@@ -160,12 +160,24 @@ class Database:
         ).fetchall()
         return {row["sub_id"] for row in rows}
 
-    def get_unprocessed_lectures(self, course_id: str | None = None) -> list[dict]:
-        query = "SELECT * FROM lectures WHERE processed_at IS NULL"
-        params = ()
+    def get_unprocessed_lectures(self, course_id: str | None = None,
+                                  max_errors: int = 3) -> list[dict]:
+        """Return lectures that need (re-)processing.
+
+        Only returns lectures whose ``error_count`` is below *max_errors* —
+        a permanently-failing lecture (e.g. ``get-sub-info`` RuntimeError
+        for a removed recording) is abandoned after that many attempts
+        rather than clogging every workflow run.
+        """
+        query = (
+            "SELECT * FROM lectures"
+            " WHERE processed_at IS NULL"
+            "   AND (error_count IS NULL OR error_count < ?)"
+        )
+        params: tuple = (max_errors,)
         if course_id:
             query += " AND course_id = ?"
-            params = (course_id,)
+            params = (max_errors, course_id)
         rows = self.conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
