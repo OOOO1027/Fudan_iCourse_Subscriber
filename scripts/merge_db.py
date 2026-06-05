@@ -51,29 +51,21 @@ def merge(local_path: str, remote_path: str):
                 INSERT OR IGNORE INTO main.lectures
                     (sub_id, course_id, sub_title, date, transcript, summary,
                      processed_at, emailed_at, error_msg, error_count, error_stage,
-                     summary_model, summary_format_version, old_summary)
+                     summary_model)
                 SELECT sub_id, course_id, sub_title, date, transcript, summary,
                        processed_at, emailed_at, error_msg, error_count, error_stage,
-                       summary_model, summary_format_version, old_summary
+                       summary_model
                 FROM local.lectures
             """)
 
             # 3) Lectures: merge existing rows (progress forward only)
             #    - Progress fields: COALESCE(local, remote) — prefer non-null
             #    - Error fields: clear if processed, otherwise keep the most info
-            #    - summary_format_version: take MAX so v2 wins
-            #    - old_summary: prefer the side that ALREADY captured the
-            #      pre-v2 text; once written it should never change
             conn.execute("""
                 UPDATE main.lectures SET
                     transcript    = COALESCE(l.transcript,    main.lectures.transcript),
                     summary       = COALESCE(l.summary,       main.lectures.summary),
                     summary_model = COALESCE(l.summary_model, main.lectures.summary_model),
-                    summary_format_version = MAX(
-                        COALESCE(l.summary_format_version, 0),
-                        COALESCE(main.lectures.summary_format_version, 0)
-                    ),
-                    old_summary   = COALESCE(main.lectures.old_summary, l.old_summary),
                     processed_at  = COALESCE(l.processed_at,  main.lectures.processed_at),
                     emailed_at    = COALESCE(l.emailed_at,    main.lectures.emailed_at),
                     error_msg = CASE

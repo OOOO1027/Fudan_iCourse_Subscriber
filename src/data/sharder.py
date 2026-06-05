@@ -524,7 +524,7 @@ def _migrate_shard_schema(target: sqlite3.Connection) -> None:
     """Ensure every attached shard has the same columns as ``main``.
 
     Older shards (created by previous code versions) may lack migration
-    columns like ``old_summary``, which causes ``INSERT ... SELECT *``
+    columns (from previous schema versions), which causes ``INSERT ... SELECT *``
     to fail with a column-count mismatch.  Adding the missing column
     to the shard before the INSERT makes the ``*`` lists match.
     """

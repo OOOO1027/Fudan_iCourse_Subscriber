@@ -377,22 +377,12 @@ class Database:
             (sub_id,),
         ).fetchone()[0]
 
-    def update_summary_v2(self, sub_id: str, summary: str, model: str):
-        """Save summary, model, AND mark format version = 1 (PPT-aware).
-
-        Preserves any previous summary into ``old_summary`` IF that column
-        hasn't been populated yet — so the FIRST overwrite (typically v0 → v2
-        via resummarize_old_lectures) captures the old text, but subsequent
-        re-runs don't clobber it.  COALESCE keeps NULLs as NULL on truly
-        first-time writes (new lecture).
-        """
+    def update_summary(self, sub_id: str, summary: str, model: str):
+        """Save summary and model name."""
         with self.conn:
             self.conn.execute(
                 """UPDATE lectures
-                   SET old_summary = COALESCE(old_summary, summary),
-                       summary = ?,
-                       summary_model = ?,
-                       summary_format_version = 1
+                   SET summary = ?, summary_model = ?
                    WHERE sub_id = ?""",
                 (summary, model, sub_id),
             )
@@ -404,63 +394,6 @@ class Database:
                 "UPDATE lectures SET emailed_at = NULL WHERE sub_id = ?",
                 (sub_id,),
             )
-
-    def get_lectures_to_resummarize(self) -> list[dict]:
-        """Old lectures with summary but missing v2 PPT-aware format.
-
-        Triggers re-OCR + re-summarize (flat mode, since old transcripts
-        have no in-memory segment timestamps).
-        """
-        rows = self.conn.execute(
-            """SELECT l.*, c.title AS course_title, c.teacher
-               FROM lectures l
-               JOIN courses c ON l.course_id = c.course_id
-               WHERE l.summary IS NOT NULL
-                 AND COALESCE(l.summary_format_version, 0) = 0"""
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def get_lectures_to_resummarize_for_courses(
-        self, course_ids: list[str],
-    ) -> list[dict]:
-        """Return lectures that need a re-OCR + re-summarize pass.
-
-        Two cases qualify (OR-ed together), both scoped to ``course_ids``:
-
-          v0 — old summary written before the PPT-aware prompt existed
-               (``summary_format_version = 0``).  These never had PPT in
-               their prompt regardless of whether PPT rows were registered.
-          missing-PPT — summary exists at any version but ``ppt_pages``
-               has no row for this lecture.  Catches v1 lectures that
-               were summarised before PPT registration was wired up;
-               whatever's in their summary did not see any PPT text.
-
-        Once a lecture has *any* ppt_pages row (even one stamped ``failed``
-        or ``invalid``), it is no longer eligible — we don't keep retrying
-        a genuinely PPT-less lecture every run.
-        """
-        if not course_ids:
-            return []
-        placeholders = ",".join("?" * len(course_ids))
-        rows = self.conn.execute(
-            f"""SELECT l.*, c.title AS course_title, c.teacher
-               FROM lectures l
-               JOIN courses c ON l.course_id = c.course_id
-               WHERE l.summary IS NOT NULL
-                 AND l.course_id IN ({placeholders})
-                 AND (
-                   COALESCE(l.summary_format_version, 0) = 0
-                   OR (
-                     COALESCE(l.summary_format_version, 0) < 1
-                     AND NOT EXISTS (
-                       SELECT 1 FROM ppt_pages p
-                       WHERE p.sub_id = l.sub_id
-                     )
-                   )
-                 )""",
-            list(course_ids),
-        ).fetchall()
-        return [dict(row) for row in rows]
 
     def get_lecture(self, sub_id: str) -> dict | None:
         """Get a single lecture row by sub_id."""

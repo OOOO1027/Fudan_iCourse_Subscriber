@@ -7,7 +7,7 @@ new instance per lecture so error state can't leak across runs.
 Phases (named like the original ``main.process_lecture`` for diff-friendly
 log greps):
 
-  A  short-circuit ``v2 summary already exists`` → mark processed, return.
+  A  short-circuit ``summary already exists`` → mark processed, return.
   B  ``PPTPipeline.submit``: stages 1-3 inline, OCR jobs submitted to the
      scheduler pool.  Returns a ``PPTAsyncHandle``.
   C  schedule **next** lecture's prefetch (image + audio) so its
@@ -20,7 +20,7 @@ log greps):
   E  ``handle.drain()`` blocks for any remaining OCR jobs.
   F  ``bucketer.assemble`` builds the prompt; ``Summarizer.summarize``
      calls the LLM round-robin until one succeeds.
-  G  persist ``update_summary_v2``, ``mark_processed``, ``clear_error``.
+  G  persist ``update_summary``, ``mark_processed``, ``clear_error``.
   H  ``audio_downloader.release`` kills ffmpeg + deletes scratch file.
 
 The runner never owns the WebVPN session check; the orchestrator
@@ -31,7 +31,6 @@ threads pick up refreshed cookies through the shared ``ICourseClient``.
 from __future__ import annotations
 
 import time
-import traceback
 from typing import TYPE_CHECKING, Optional
 
 from src.ai import bucketer
@@ -80,7 +79,7 @@ class LectureRunner:
 
         existing = self._db.get_lecture(sub_id)
         # ── Phase A — short-circuit if a v2 summary already exists ──────
-        if self._has_v2_summary(existing):
+        if self._has_summary(existing):
             self._reporter.lecture_skip_v2_done(
                 sub_title, len(existing["summary"])
             )
@@ -159,11 +158,10 @@ class LectureRunner:
     # ── Internal helpers ────────────────────────────────────────────────
 
     @staticmethod
-    def _has_v2_summary(existing: dict | None) -> bool:
+    def _has_summary(existing: dict | None) -> bool:
         return bool(
             existing
             and existing.get("summary")
-            and (existing.get("summary_format_version") or 0) >= 1
         )
 
     def _schedule_next(self, next_info: Optional[tuple[str, str]]):
@@ -258,7 +256,7 @@ class LectureRunner:
             self._reporter.info(
                 f"    [OK] Summary by {model_used}: {len(summary)} chars"
             )
-            self._db.update_summary_v2(sub_id, summary, model_used)
+            self._db.update_summary(sub_id, summary, model_used)
             return summary
         except Exception as e:
             self._reporter.info(
@@ -276,82 +274,3 @@ class LectureRunner:
             )
 
 
-def resummarize_old_lectures(client: "ICourseClient", db: "Database",
-                             summarizer: "Summarizer",
-                             ppt_pipeline: PPTPipeline,
-                             reporter: "Reporter",
-                             email_items: list, course_ids: list[str],
-                             check_session_fn=None):
-    """Upgrade pre-v2 summaries to PPT-aware v2 format (flat-mode prompt).
-
-    Old lectures kept their original transcript but never had PPT OCR.  We
-    re-run the PPT pipeline against the cached transcript and re-summarize.
-    Each upgraded lecture is appended to ``email_items`` with
-    ``is_update=True`` so Emailer adds the （含 PPT 识别·更新）subject
-    suffix and a 更新 badge.
-
-    Scoped to ``course_ids`` so we don't re-OCR courses the user isn't
-    monitoring this run.
-    """
-    targets = db.get_lectures_to_resummarize_for_courses(course_ids)
-    if not targets:
-        return
-    reporter.resummarize_header(len(targets))
-
-    seen_sub_ids = {item["sub_id"] for item in email_items}
-    for idx, row in enumerate(targets, 1):
-        sub_id = str(row["sub_id"])
-        course_id = row["course_id"]
-        sub_title = row.get("sub_title", sub_id)
-        course_title = row.get("course_title", "Unknown")
-        date = row.get("date", "")
-        t_lec = time.time()
-        try:
-            reporter.resummarize_one(course_title, sub_title)
-            reporter.info(f"    [Resummarize] {idx}/{len(targets)}")
-            if check_session_fn:
-                check_session_fn(client)
-            try:
-                ppt_pipeline.run_blocking(client, course_id, sub_id)
-            except Exception as e:
-                reporter.info(
-                    f"    [WARN] PPT OCR phase failed: "
-                    f"{type(e).__name__}: {e}"
-                )
-
-            transcript = row.get("transcript") or ""
-            if not transcript.strip():
-                reporter.info("    Empty transcript, cannot resummarize.")
-                continue
-
-            kept_pages = db.get_done_ppt_pages(sub_id)
-            prompt_text, mode = bucketer.assemble(transcript, None, kept_pages)
-            reporter.info(
-                f"    Prompt: mode={mode}, {len(prompt_text)} chars,"
-                f" {len(kept_pages)} kept PPT page(s)"
-            )
-
-            summary, model_used = summarizer.summarize(
-                course_title, prompt_text,
-            )
-            db.update_summary_v2(sub_id, summary, model_used)
-            db.reset_emailed(sub_id)
-            reporter.info(
-                f"    [OK] v2 summary by {model_used}: {len(summary)} chars"
-                f"  (lecture total {time.time()-t_lec:.0f}s)"
-            )
-
-            if sub_id in seen_sub_ids:
-                continue
-            email_items.append({
-                "sub_id": sub_id,
-                "course_title": course_title,
-                "sub_title": sub_title,
-                "date": date,
-                "summary": summary,
-                "is_update": True,
-            })
-            seen_sub_ids.add(sub_id)
-        except Exception:
-            reporter.info(f"    [FAIL] Resummarize {sub_id}:")
-            traceback.print_exc()

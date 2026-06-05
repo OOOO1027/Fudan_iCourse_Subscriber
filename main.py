@@ -22,8 +22,7 @@ from src.runtime import config
 from src.data.database import Database
 from src.api.emailer import Emailer
 from src.api.icourse import ICourseClient
-from src.pipeline.lecture_runner import LectureRunner, resummarize_old_lectures
-from src.pipeline.ppt_pipeline import PPTPipeline
+from src.pipeline.lecture_runner import LectureRunner
 from src.runtime.reporter import Reporter
 from src.runtime.scheduler import Scheduler
 from src.ai.summarizer import Summarizer
@@ -317,26 +316,6 @@ def run():
             all_lectures, email_items,
         )
 
-        # Resummarize old (pre-v2) lectures, scoped to the courses we're
-        # actively monitoring this run.  Opt-in via RESUMMARIZE_OLD=1
-        # because re-OCR + re-LLM on every stale lecture turns a 5-min
-        # nightly run into a 2-hour one; flip on for one-shot manual runs.
-        if config.RESUMMARIZE_OLD_ENABLED:
-            try:
-                _check_session(client)
-                ppt_pipeline = PPTPipeline(db, scheduler, reporter)
-                resummarize_old_lectures(
-                    client, db, summarizer, ppt_pipeline, reporter,
-                    email_items, config.COURSE_IDS,
-                    check_session_fn=_check_session,
-                )
-            except Exception:
-                reporter.info("[Resummarize] phase errored:")
-                traceback.print_exc()
-        else:
-            reporter.info(
-                "\n[Resummarize] Skipping — set RESUMMARIZE_OLD=1 to enable."
-            )
     finally:
         scheduler.shutdown()
 
