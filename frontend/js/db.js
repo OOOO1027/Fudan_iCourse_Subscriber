@@ -59,13 +59,47 @@ function _exportDB() {
 function _copyRows(src, dst, table) {
   const result = src.exec(`SELECT * FROM ${table}`);
   if (!result.length || !result[0].values.length) return;
-  const cols = result[0].columns;
-  const placeholders = cols.map(() => "?").join(",");
+  // Shard may have extra columns that the frontend's schema no longer
+  // defines (e.g. summary_format_version).  Only copy columns that
+  // actually exist in the destination table.
+  var dstCols = {};
+  try {
+    var info = dst.exec("PRAGMA table_info(" + table + ")");
+    if (info.length && info[0].values) {
+      for (var i = 0; i < info[0].values.length; i++) {
+        dstCols[info[0].values[i][1]] = true;
+      }
+    }
+  } catch (e) { /* fall through — use all source columns */ }
+  const srcCols = result[0].columns;
+  var cols = srcCols;
+  var colIndexes = null;
+  if (Object.keys(dstCols).length) {
+    cols = [];
+    colIndexes = [];
+    for (var j = 0; j < srcCols.length; j++) {
+      if (dstCols[srcCols[j]]) {
+        cols.push(srcCols[j]);
+        colIndexes.push(j);
+      }
+    }
+  }
+  if (!cols.length) return;
+  const placeholders = cols.map(function () { return "?"; }).join(",");
   const stmt = dst.prepare(
-    `INSERT OR IGNORE INTO ${table} (${cols.join(",")}) VALUES (${placeholders})`
+    "INSERT OR IGNORE INTO " + table + " (" + cols.join(",") + ") VALUES (" + placeholders + ")"
   );
-  for (const row of result[0].values) {
-    stmt.bind(row);
+  for (var k = 0; k < result[0].values.length; k++) {
+    var row = result[0].values[k];
+    if (colIndexes) {
+      var filtered = [];
+      for (var m = 0; m < colIndexes.length; m++) {
+        filtered.push(row[colIndexes[m]]);
+      }
+      stmt.bind(filtered);
+    } else {
+      stmt.bind(row);
+    }
     stmt.step();
     stmt.reset();
   }
