@@ -86,8 +86,8 @@ async function _fetchEncryptedDB(owner, repo, branch, token) {
     `${_GH_API}/repos/${owner}/${repo}/git/blobs/${fileEntry.sha}`,
     {
       headers: {
-        Accept: "application/vnd.github.raw",
         ..._ghHeaders(token),
+        Accept: "application/vnd.github.raw",
       },
     }
   );
@@ -101,8 +101,8 @@ async function _fetchBlobBytes(owner, repo, blobSha, token) {
     `${_GH_API}/repos/${owner}/${repo}/git/blobs/${blobSha}`,
     {
       headers: {
-        Accept: "application/vnd.github.raw",
         ..._ghHeaders(token),
+        Accept: "application/vnd.github.raw",
       },
     }
   );
