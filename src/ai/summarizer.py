@@ -94,6 +94,22 @@ class Summarizer:
             for p in self.providers
         }
 
+    @staticmethod
+    def _is_transient_llm_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(
+            marker in msg
+            for marker in (
+                "429",
+                "503",
+                "rate limit",
+                "resource_exhausted",
+                "unavailable",
+                "temporarily",
+                "high demand",
+            )
+        )
+
     def _call_llm(self, client: OpenAI, model: str,
                   title: str, content: str) -> str:
         t0 = time.time()
@@ -148,13 +164,26 @@ class Summarizer:
             client = self._clients[provider["name"]]
             for model in provider["models"]:
                 model_id = f"{provider['name']}/{model}"
-                try:
-                    result = self._call_llm(client, model, title, content)
-                    return (result, model_id)
-                except Exception as e:
-                    print(f"[Summarizer] {model_id} failed: "
-                          f"{type(e).__name__}: {e}")
-                    errors.append(f"{model_id}: {e}")
+                attempts = 3
+                for attempt in range(1, attempts + 1):
+                    try:
+                        result = self._call_llm(client, model, title, content)
+                        return (result, model_id)
+                    except Exception as e:
+                        print(f"[Summarizer] {model_id} attempt "
+                              f"{attempt}/{attempts} failed: "
+                              f"{type(e).__name__}: {e}")
+                        errors.append(f"{model_id} attempt {attempt}: {e}")
+                        if (
+                            attempt < attempts
+                            and self._is_transient_llm_error(e)
+                        ):
+                            wait_s = 20 * attempt
+                            print(f"[Summarizer] transient error; retrying "
+                                  f"{model_id} in {wait_s}s")
+                            time.sleep(wait_s)
+                            continue
+                        break
 
         raise RuntimeError(
             "All LLM models failed:\n" + "\n".join(errors)
