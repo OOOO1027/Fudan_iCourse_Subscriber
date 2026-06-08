@@ -10,10 +10,11 @@ window.ICS = window.ICS || {};
 const _GH_API = "https://api.github.com";
 
 function _ghHeaders(token) {
-  return {
-    Authorization: `token ${token}`,
-    Accept: "application/vnd.github+json",
-  };
+  const headers = { Accept: "application/vnd.github+json" };
+  if (token && String(token).trim()) {
+    headers.Authorization = `token ${String(token).trim()}`;
+  }
+  return headers;
 }
 
 function _detectRepo() {
@@ -85,8 +86,8 @@ async function _fetchEncryptedDB(owner, repo, branch, token) {
     `${_GH_API}/repos/${owner}/${repo}/git/blobs/${fileEntry.sha}`,
     {
       headers: {
-        Authorization: `token ${token}`,
         Accept: "application/vnd.github.raw",
+        ..._ghHeaders(token),
       },
     }
   );
@@ -100,8 +101,8 @@ async function _fetchBlobBytes(owner, repo, blobSha, token) {
     `${_GH_API}/repos/${owner}/${repo}/git/blobs/${blobSha}`,
     {
       headers: {
-        Authorization: `token ${token}`,
         Accept: "application/vnd.github.raw",
+        ..._ghHeaders(token),
       },
     }
   );

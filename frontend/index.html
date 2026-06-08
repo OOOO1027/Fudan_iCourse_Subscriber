@@ -205,13 +205,13 @@
       <!-- GitHub PAT -->
       <div>
         <label class="block text-xs text-gray-500 mb-1">
-          GitHub Fine-grained PAT
+          GitHub Fine-grained PAT (optional for viewing)
           <a href="https://github.com/settings/personal-access-tokens/new" target="_blank"
              class="text-blue-500 underline ml-1">Create</a>
         </label>
         <input x-model="setup.token" type="password" placeholder="github_pat_..."
                class="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-300 focus:outline-none">
-        <p class="text-xs text-gray-400 mt-1">Scope: this repo only, Contents: Read and Write</p>
+        <p class="text-xs text-gray-400 mt-1">Leave blank to view public encrypted data. Required only for saving subscriptions, triggering workflows, deleting data, or exporting PDFs.</p>
       </div>
 
       <!-- 4 Secrets -->
