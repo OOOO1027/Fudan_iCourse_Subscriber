@@ -64,4 +64,10 @@ assert(secondPage.page === 2, "single-line content should move to page 2");
 assert(secondPage.html.includes("B"), "page 2 of a long single line should not be blank");
 assert(parseCalls.length === 0, "single-line long page should not call markdown renderer");
 
+const padded = "| 级别 | 内容 |" + " ".repeat(30000) + "核心内容";
+const paddedPage = render.renderMarkdownPage(padded, 1, 12000);
+assert(paddedPage.html.includes("核心内容"), "display chunks should compact excessive padding");
+assert(paddedPage.rawTotalChars === padded.length, "raw total should preserve original length metadata");
+assert(paddedPage.totalChars < paddedPage.rawTotalChars, "display total should reflect compacted text length");
+
 console.log("frontend render paging ok");

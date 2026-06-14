@@ -257,6 +257,8 @@ document.addEventListener("alpine:init", () => {
     summaryStartChar: 0,
     summaryEndChar: 0,
     summaryTotalChars: 0,
+    summaryRawTotalChars: 0,
+    summaryIsCompacted: false,
     summaryIsPaged: false,
     detailView: "summary",
     searchQuery: "", searchResults: [],
@@ -384,6 +386,8 @@ document.addEventListener("alpine:init", () => {
         this.summaryStartChar = 0;
         this.summaryEndChar = 0;
         this.summaryTotalChars = 0;
+        this.summaryRawTotalChars = 0;
+        this.summaryIsCompacted = false;
         this.summaryIsPaged = false;
       }
       this.view = view;
@@ -397,6 +401,8 @@ document.addEventListener("alpine:init", () => {
       this.summaryStartChar = result.startChar;
       this.summaryEndChar = result.endChar;
       this.summaryTotalChars = result.totalChars;
+      this.summaryRawTotalChars = result.rawTotalChars;
+      this.summaryIsCompacted = result.isCompacted;
       this.summaryIsPaged = result.isPaged;
     },
     _sortCoursesByStar(list) {

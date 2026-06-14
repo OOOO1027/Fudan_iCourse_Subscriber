@@ -61,6 +61,17 @@ function _renderPlainChunk(source, start, end) {
   return DOMPurify.sanitize(html);
 }
 
+function _compactDisplaySource(source) {
+  return String(source || "")
+    .split(/\r?\n/)
+    .map(function (line) {
+      return line.replace(/[ \t]+/g, " ").trimEnd();
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** Replace $...$ and $$...$$ with placeholders so marked won't touch them. */
 function _stashFormulas(mdText) {
   var formulas = [];
@@ -113,19 +124,22 @@ function _renderMarkdown(mdText) {
 function _renderMarkdownPage(mdText, page, pageSize) {
   var source = String(mdText || "");
   var size = Math.max(1000, Number(pageSize) || _MARKDOWN_PAGE_SIZE);
-  var pageCount = Math.max(1, Math.ceil(source.length / size));
+  var isPaged = source.length > size;
+  var displaySource = isPaged ? _compactDisplaySource(source) : source;
+  var pageCount = Math.max(1, Math.ceil(displaySource.length / size));
   var safePage = Math.min(Math.max(1, Number(page) || 1), pageCount);
   var start = (safePage - 1) * size;
-  var end = Math.min(source.length, start + size);
-  var chunk = source.slice(start, end);
-  var isPaged = source.length > size;
+  var end = Math.min(displaySource.length, start + size);
+  var chunk = displaySource.slice(start, end);
   return {
-    html: isPaged ? _renderPlainChunk(source, start, end) : _renderMarkdown(chunk),
+    html: isPaged ? _renderPlainChunk(displaySource, start, end) : _renderMarkdown(chunk),
     page: safePage,
     pageCount: pageCount,
-    startChar: source.length ? start + 1 : 0,
+    startChar: displaySource.length ? start + 1 : 0,
     endChar: end,
-    totalChars: source.length,
+    totalChars: displaySource.length,
+    rawTotalChars: source.length,
+    isCompacted: isPaged && displaySource.length !== source.length,
     isPaged: isPaged,
   };
 }
