@@ -51,6 +51,16 @@ function _renderLongPlainPreview(source) {
   return DOMPurify.sanitize(html);
 }
 
+function _renderPlainChunk(source, start, end) {
+  var chunk = source.slice(start, end);
+  var html = [
+    '<pre class="whitespace-pre-wrap font-sans text-sm bg-white border border-gray-100 rounded-lg p-3 overflow-x-auto">',
+    _escapeHtml(chunk),
+    "</pre>",
+  ].join("");
+  return DOMPurify.sanitize(html);
+}
+
 /** Replace $...$ and $$...$$ with placeholders so marked won't touch them. */
 function _stashFormulas(mdText) {
   var formulas = [];
@@ -108,14 +118,15 @@ function _renderMarkdownPage(mdText, page, pageSize) {
   var start = (safePage - 1) * size;
   var end = Math.min(source.length, start + size);
   var chunk = source.slice(start, end);
+  var isPaged = source.length > size;
   return {
-    html: _renderMarkdown(chunk),
+    html: isPaged ? _renderPlainChunk(source, start, end) : _renderMarkdown(chunk),
     page: safePage,
     pageCount: pageCount,
     startChar: source.length ? start + 1 : 0,
     endChar: end,
     totalChars: source.length,
-    isPaged: source.length > size,
+    isPaged: isPaged,
   };
 }
 
