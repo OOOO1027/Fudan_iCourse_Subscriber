@@ -34,7 +34,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from src.ai import bucketer
-from src.ai.summarizer import InvalidSummaryError, Summarizer
+from src.pipeline.lecture_selection import has_usable_summary
 from src.pipeline.ppt_pipeline import PPTPipeline
 from src.ai.transcriber import IncompleteAudioError, NoAudioStreamError
 
@@ -164,13 +164,7 @@ class LectureRunner:
 
     @staticmethod
     def _has_summary(existing: dict | None) -> bool:
-        if not (existing and existing.get("summary")):
-            return False
-        try:
-            Summarizer._validate_summary_text(existing["summary"])
-        except InvalidSummaryError:
-            return False
-        return True
+        return has_usable_summary(existing)
 
     def _schedule_next(self, next_info: Optional[tuple[str, str]]):
         if next_info is None:
@@ -280,4 +274,3 @@ class LectureRunner:
             self._reporter.info(
                 f"    [WARN] audio release failed: {type(e).__name__}: {e}"
             )
-

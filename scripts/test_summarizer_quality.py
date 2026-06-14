@@ -34,6 +34,7 @@ sys.modules.setdefault("src.ai.transcriber", fake_transcriber)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.ai.summarizer import Summarizer
+from src.pipeline.lecture_selection import lecture_needs_processing
 from src.pipeline.lecture_runner import LectureRunner
 
 
@@ -101,8 +102,54 @@ def test_runner_does_not_skip_bad_existing_summary():
     )
 
 
+def test_enumerator_requeues_processed_bad_summary_only():
+    processed = {"bad", "good", "no_summary"}
+
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "bad", "has_playback": True},
+            {"summary": BAD_SUMMARY},
+            processed,
+        ) is True,
+        "processed lecture with malformed summary should be requeued",
+    )
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "good", "has_playback": True},
+            {"summary": GOOD_SUMMARY},
+            processed,
+        ) is False,
+        "processed lecture with valid summary should still be skipped",
+    )
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "no_summary", "has_playback": True},
+            {"summary": ""},
+            processed,
+        ) is False,
+        "processed lecture without a summary should keep the existing skip behavior",
+    )
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "new", "has_playback": True},
+            None,
+            processed,
+        ) is True,
+        "new playback lecture should still be queued",
+    )
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "no_playback", "has_playback": False},
+            None,
+            processed,
+        ) is False,
+        "lecture without playback should not be queued",
+    )
+
+
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
     test_normal_long_markdown_summary_is_accepted()
     test_runner_does_not_skip_bad_existing_summary()
+    test_enumerator_requeues_processed_bad_summary_only()
     print("summarizer quality checks ok")

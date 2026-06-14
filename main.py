@@ -22,6 +22,7 @@ from src.runtime import config
 from src.data.database import Database
 from src.api.emailer import Emailer
 from src.api.icourse import ICourseClient
+from src.pipeline.lecture_selection import lecture_needs_processing
 from src.pipeline.lecture_runner import LectureRunner
 from src.runtime.reporter import Reporter
 from src.runtime.scheduler import Scheduler
@@ -106,8 +107,9 @@ def _enumerate_lectures(client: ICourseClient, db: Database,
             known_processed = db.get_processed_sub_ids(course_id)
             new_lectures = [
                 lec for lec in lectures
-                if lec.get("has_playback")
-                and str(lec["sub_id"]) not in known_processed
+                if lecture_needs_processing(
+                    lec, db.get_lecture(str(lec["sub_id"])), known_processed,
+                )
             ]
             unprocessed = db.get_unprocessed_lectures(course_id)
             new_ids = {str(lec["sub_id"]) for lec in new_lectures}
