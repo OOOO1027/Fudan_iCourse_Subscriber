@@ -15,7 +15,16 @@ window.ICS = window.ICS || {};
 var _FORMULA_PLACEHOLDER_PREFIX = "";
 var _FORMULA_PLACEHOLDER_SUFFIX = "";
 var _SNIPPET_SCAN_LIMIT = 6000;
-var _MARKDOWN_RENDER_LIMIT = 80000;
+var _MARKDOWN_RENDER_LIMIT = 20000;
+
+function _escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 function _renderLimitNotice(originalLen, renderedLen) {
   return [
@@ -27,6 +36,18 @@ function _renderLimitNotice(originalLen, renderedLen) {
     " 字，避免浏览器卡死。完整文本仍保留在数据库和导出里。",
     "</p>",
   ].join("");
+}
+
+function _renderLongPlainPreview(source) {
+  var preview = source.slice(0, _MARKDOWN_RENDER_LIMIT);
+  var html = [
+    _renderLimitNotice(source.length, _MARKDOWN_RENDER_LIMIT),
+    '<pre class="whitespace-pre-wrap font-sans text-sm bg-white border border-gray-100 rounded-lg p-3 overflow-x-auto">',
+    _escapeHtml(preview),
+    "\n...",
+    "</pre>",
+  ].join("");
+  return DOMPurify.sanitize(html);
 }
 
 /** Replace $...$ and $$...$$ with placeholders so marked won't touch them. */
@@ -69,16 +90,13 @@ function _restoreFormulas(html, formulas) {
 function _renderMarkdown(mdText) {
   if (!mdText) return "";
   var source = String(mdText);
-  var truncated = source.length > _MARKDOWN_RENDER_LIMIT;
-  var renderSource = truncated
-    ? source.slice(0, _MARKDOWN_RENDER_LIMIT) + "\n\n..."
-    : source;
-  var stashed = _stashFormulas(renderSource);
+  if (source.length > _MARKDOWN_RENDER_LIMIT) {
+    return _renderLongPlainPreview(source);
+  }
+  var stashed = _stashFormulas(source);
   var rawHtml = marked.parse(stashed.text, { breaks: true });
   var restored = _restoreFormulas(rawHtml, stashed.formulas);
-  var html = DOMPurify.sanitize(restored);
-  if (!truncated) return html;
-  return html + _renderLimitNotice(source.length, _MARKDOWN_RENDER_LIMIT);
+  return DOMPurify.sanitize(restored);
 }
 
 function _activateKaTeX(element) {
