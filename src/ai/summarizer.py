@@ -1,5 +1,6 @@
 """LLM-based course lecture summarization via ModelScope API."""
 
+import re
 import time
 
 from openai import OpenAI
@@ -73,6 +74,11 @@ SYSTEM_PROMPT= r"""你是一个专业的课程助教。你的任务是根据用�
    - 但是，你的总结的组织的主线仍然应该以讲师的讲解为逻辑组织，同时把PPT的信息补充进去。
    - 输出仍按之前的格式要求，不要保留时间戳标签，只把这些信息当作上下文辅助理解，不用说哪些来自转写哪些来自ppt，自然地合并录音转写和ppt中的知识，生成高质量笔记。"""
 
+
+class InvalidSummaryError(ValueError):
+    """Raised when a model response is structurally unusable as a summary."""
+
+
 class Summarizer:
     """Course lecture summarizer with multi-provider fallback.
 
@@ -110,6 +116,38 @@ class Summarizer:
             )
         )
 
+    @staticmethod
+    def _validate_summary_text(summary: str):
+        """Reject malformed LLM output before it is persisted.
+
+        Some OpenAI-compatible providers can return a response that is huge in
+        raw bytes but almost empty after whitespace is collapsed.  Saving that
+        marks the lecture as processed while the frontend has no real note to
+        show, so treat it as a failed model attempt and let fallback/retry run.
+        """
+        if not isinstance(summary, str):
+            raise InvalidSummaryError("summary content is not text")
+
+        stripped = summary.strip()
+        if not stripped:
+            raise InvalidSummaryError("summary content is empty")
+
+        raw_len = len(summary)
+        non_ws_len = len(re.sub(r"\s+", "", summary))
+        compacted_len = len(re.sub(r"\s+", " ", stripped))
+
+        if raw_len >= 20_000 and non_ws_len < 1_000:
+            raise InvalidSummaryError(
+                "summary is mostly whitespace "
+                f"(raw={raw_len}, non_ws={non_ws_len})"
+            )
+
+        if raw_len >= 200_000 and raw_len / max(compacted_len, 1) >= 50:
+            raise InvalidSummaryError(
+                "summary has pathological whitespace expansion "
+                f"(raw={raw_len}, compacted={compacted_len})"
+            )
+
     def _call_llm(self, client: OpenAI, model: str,
                   title: str, content: str) -> str:
         t0 = time.time()
@@ -125,7 +163,7 @@ class Summarizer:
             # temperature=0.3,
             timeout=180,
         )
-        result = response.choices[0].message.content
+        result = response.choices[0].message.content or ""
         elapsed = time.time() - t0
         # Token usage helps explain run cost — every provider's billing is
         # token-based, and rate-limit decisions key off prompt size much
@@ -168,16 +206,20 @@ class Summarizer:
                 for attempt in range(1, attempts + 1):
                     try:
                         result = self._call_llm(client, model, title, content)
+                        self._validate_summary_text(result)
                         return (result, model_id)
                     except Exception as e:
                         print(f"[Summarizer] {model_id} attempt "
                               f"{attempt}/{attempts} failed: "
                               f"{type(e).__name__}: {e}")
                         errors.append(f"{model_id} attempt {attempt}: {e}")
-                        if (
-                            attempt < attempts
-                            and self._is_transient_llm_error(e)
+                        if attempt < attempts and isinstance(
+                            e, InvalidSummaryError
                         ):
+                            print(f"[Summarizer] invalid output; retrying "
+                                  f"{model_id}")
+                            continue
+                        if attempt < attempts and self._is_transient_llm_error(e):
                             wait_s = 20 * attempt
                             print(f"[Summarizer] transient error; retrying "
                                   f"{model_id} in {wait_s}s")
