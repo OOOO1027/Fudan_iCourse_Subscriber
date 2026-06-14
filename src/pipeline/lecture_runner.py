@@ -34,6 +34,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from src.ai import bucketer
+from src.ai.summarizer import InvalidSummaryError, Summarizer
 from src.pipeline.ppt_pipeline import PPTPipeline
 from src.ai.transcriber import IncompleteAudioError, NoAudioStreamError
 
@@ -42,7 +43,6 @@ if TYPE_CHECKING:
     from src.api.icourse import ICourseClient
     from src.runtime.reporter import Reporter
     from src.runtime.scheduler import Scheduler
-    from src.ai.summarizer import Summarizer
     from src.ai.transcriber import Transcriber
 
 
@@ -79,7 +79,12 @@ class LectureRunner:
 
         existing = self._db.get_lecture(sub_id)
         # ── Phase A — short-circuit if a v2 summary already exists ──────
-        if self._has_summary(existing):
+        summary_ready = self._has_summary(existing)
+        if existing and existing.get("summary") and not summary_ready:
+            self._reporter.info(
+                "    Existing summary is malformed; regenerating summary."
+            )
+        if summary_ready:
             self._reporter.lecture_skip_v2_done(
                 sub_title, len(existing["summary"])
             )
@@ -159,10 +164,13 @@ class LectureRunner:
 
     @staticmethod
     def _has_summary(existing: dict | None) -> bool:
-        return bool(
-            existing
-            and existing.get("summary")
-        )
+        if not (existing and existing.get("summary")):
+            return False
+        try:
+            Summarizer._validate_summary_text(existing["summary"])
+        except InvalidSummaryError:
+            return False
+        return True
 
     def _schedule_next(self, next_info: Optional[tuple[str, str]]):
         if next_info is None:
@@ -272,5 +280,4 @@ class LectureRunner:
             self._reporter.info(
                 f"    [WARN] audio release failed: {type(e).__name__}: {e}"
             )
-
 

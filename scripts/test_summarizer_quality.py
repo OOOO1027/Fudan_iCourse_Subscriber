@@ -6,9 +6,35 @@ from pathlib import Path
 fake_openai = types.ModuleType("openai")
 fake_openai.OpenAI = object
 sys.modules.setdefault("openai", fake_openai)
+
+fake_imagehash = types.ModuleType("imagehash")
+fake_imagehash.dhash = lambda image: "0" * 16
+sys.modules.setdefault("imagehash", fake_imagehash)
+
+fake_rapidocr = types.ModuleType("rapidocr_onnxruntime")
+fake_rapidocr.RapidOCR = lambda: None
+sys.modules.setdefault("rapidocr_onnxruntime", fake_rapidocr)
+
+fake_sherpa = types.ModuleType("sherpa_onnx")
+sys.modules.setdefault("sherpa_onnx", fake_sherpa)
+
+fake_ppt_pipeline = types.ModuleType("src.pipeline.ppt_pipeline")
+fake_ppt_pipeline.PPTPipeline = object
+sys.modules.setdefault("src.pipeline.ppt_pipeline", fake_ppt_pipeline)
+
+fake_transcriber = types.ModuleType("src.ai.transcriber")
+fake_transcriber.IncompleteAudioError = type(
+    "IncompleteAudioError", (Exception,), {}
+)
+fake_transcriber.NoAudioStreamError = type(
+    "NoAudioStreamError", (Exception,), {}
+)
+sys.modules.setdefault("src.ai.transcriber", fake_transcriber)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.ai.summarizer import Summarizer
+from src.pipeline.lecture_runner import LectureRunner
 
 
 def assert_true(condition, message):
@@ -64,7 +90,19 @@ def test_normal_long_markdown_summary_is_accepted():
     assert_true(summarizer.calls == 1, "valid output should not be retried")
 
 
+def test_runner_does_not_skip_bad_existing_summary():
+    assert_true(
+        LectureRunner._has_summary({"summary": BAD_SUMMARY}) is False,
+        "bad existing summary should be treated as missing so single_run can rewrite it",
+    )
+    assert_true(
+        LectureRunner._has_summary({"summary": GOOD_SUMMARY}) is True,
+        "valid existing summary should still be skipped",
+    )
+
+
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
     test_normal_long_markdown_summary_is_accepted()
+    test_runner_does_not_skip_bad_existing_summary()
     print("summarizer quality checks ok")
