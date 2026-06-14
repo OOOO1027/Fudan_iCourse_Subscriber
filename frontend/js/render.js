@@ -14,6 +14,20 @@ window.ICS = window.ICS || {};
 
 var _FORMULA_PLACEHOLDER_PREFIX = "";
 var _FORMULA_PLACEHOLDER_SUFFIX = "";
+var _SNIPPET_SCAN_LIMIT = 6000;
+var _MARKDOWN_RENDER_LIMIT = 80000;
+
+function _renderLimitNotice(originalLen, renderedLen) {
+  return [
+    '<p class="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">',
+    "内容过长，已先渲染前 ",
+    renderedLen.toLocaleString(),
+    " / ",
+    originalLen.toLocaleString(),
+    " 字，避免浏览器卡死。完整文本仍保留在数据库和导出里。",
+    "</p>",
+  ].join("");
+}
 
 /** Replace $...$ and $$...$$ with placeholders so marked won't touch them. */
 function _stashFormulas(mdText) {
@@ -54,10 +68,17 @@ function _restoreFormulas(html, formulas) {
 
 function _renderMarkdown(mdText) {
   if (!mdText) return "";
-  var stashed = _stashFormulas(mdText);
+  var source = String(mdText);
+  var truncated = source.length > _MARKDOWN_RENDER_LIMIT;
+  var renderSource = truncated
+    ? source.slice(0, _MARKDOWN_RENDER_LIMIT) + "\n\n..."
+    : source;
+  var stashed = _stashFormulas(renderSource);
   var rawHtml = marked.parse(stashed.text, { breaks: true });
   var restored = _restoreFormulas(rawHtml, stashed.formulas);
-  return DOMPurify.sanitize(restored);
+  var html = DOMPurify.sanitize(restored);
+  if (!truncated) return html;
+  return html + _renderLimitNotice(source.length, _MARKDOWN_RENDER_LIMIT);
 }
 
 function _activateKaTeX(element) {
@@ -76,7 +97,7 @@ function _activateKaTeX(element) {
 function _plainSnippet(mdText, maxLen) {
   maxLen = maxLen || 100;
   if (!mdText) return "";
-  var text = mdText
+  var text = String(mdText).slice(0, Math.max(_SNIPPET_SCAN_LIMIT, maxLen * 20))
     .replace(/\$\$.+?\$\$/gs, "...")
     .replace(/\\\[.+?\\\]/gs, "...")
     .replace(/\$[^$]+?\$/g, "...")

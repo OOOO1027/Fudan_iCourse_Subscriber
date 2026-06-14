@@ -316,7 +316,7 @@
           <!-- Preview snippet for ready lectures -->
           <p x-show="lec.state === 'ready' && lec.summary"
              class="text-xs text-gray-400 mt-1.5 line-clamp-2"
-             x-text="snippet(lec.summary, 100)"></p>
+             x-text="lec.summary_preview"></p>
           <!-- Error detail -->
           <p x-show="lec.state === 'failed' && lec.error_msg"
              class="text-xs text-red-400 mt-1 truncate" x-text="lec.error_msg"></p>
@@ -356,7 +356,7 @@
         <!-- Summary -->
         <div x-show="detailView === 'summary'"
              class="prose"
-             x-html="renderMd(currentLecture.summary || '')"
+             x-html="currentSummaryHtml"
              x-effect="detailView === 'summary' && currentLecture && $nextTick(() => activateKaTeX($el))">
         </div>
 

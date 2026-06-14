@@ -250,6 +250,7 @@ document.addEventListener("alpine:init", () => {
     courses: [], lectures: [],
     currentCourse: null, currentLecture: null,
     currentPptPages: [],
+    currentSummaryHtml: "",
     detailView: "summary",
     searchQuery: "", searchResults: [],
     searchCourseFilterQuery: "", searchSelectedCourseIds: [],
@@ -353,14 +354,23 @@ document.addEventListener("alpine:init", () => {
       }
       else if (view === "lectures" && params.courseId) {
         this.currentCourse = this.courses.find(x => x.course_id === params.courseId) || { course_id: params.courseId, title: "...", teacher: "" };
-        this.lectures = ICS.db.getLectures(params.courseId);
+        this.lectures = ICS.db.getLectures(params.courseId).map((lec) => ({
+          ...lec,
+          summary_preview: lec.summary ? ICS.render.plainSnippet(lec.summary, 100) : "",
+        }));
       }
       else if (view === "detail" && params.subId) {
         this.currentLecture = ICS.db.getLecture(params.subId);
         this.currentPptPages = this.currentLecture
           ? ICS.db.getPptPages(this.currentLecture.sub_id)
           : [];
+        this.currentSummaryHtml = this.currentLecture
+          ? ICS.render.renderMarkdown(this.currentLecture.summary || "")
+          : "";
         this.detailView = "summary";
+      }
+      else if (view !== "detail") {
+        this.currentSummaryHtml = "";
       }
       this.view = view;
       if (view !== "lectures") this.exportDialogOpen = false;
