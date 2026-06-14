@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
 
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="css/app.css?v=freeze-fix-20260614-2">
+  <link rel="stylesheet" href="css/app.css?v=summary-pager-20260614">
 </head>
 <body class="bg-gray-50 min-h-[100dvh]" x-data="app()" x-cloak>
 
@@ -354,10 +354,37 @@
         </nav>
 
         <!-- Summary -->
+        <div x-show="detailView === 'summary' && summaryIsPaged"
+             class="mb-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <p>
+              AI 总结较长，已分段渲染：
+              第 <span x-text="summaryPage"></span>/<span x-text="summaryPageCount"></span> 段，
+              当前 <span x-text="formatCount(summaryStartChar)"></span>-<span x-text="formatCount(summaryEndChar)"></span>
+              / <span x-text="formatCount(summaryTotalChars)"></span> 字。
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <button @click="gotoSummaryPage(-1)"
+                      :disabled="summaryPage <= 1"
+                      class="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium text-blue-700 disabled:opacity-40">
+                上一段
+              </button>
+              <button @click="copyFullSummary()"
+                      class="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium text-blue-700">
+                复制完整总结
+              </button>
+              <button @click="gotoSummaryPage(1)"
+                      :disabled="summaryPage >= summaryPageCount"
+                      class="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium text-blue-700 disabled:opacity-40">
+                下一段
+              </button>
+            </div>
+          </div>
+        </div>
         <div x-show="detailView === 'summary'"
              class="prose"
              x-html="$data.currentSummaryHtml || ''"
-             x-effect="detailView === 'summary' && currentLecture && $nextTick(() => activateKaTeX($el))">
+             x-effect="currentSummaryHtml && detailView === 'summary' && currentLecture && $nextTick(() => activateKaTeX($el))">
         </div>
 
         <!-- Transcript -->
@@ -914,12 +941,12 @@
 <script src="https://cdn.jsdelivr.net/npm/libsodium@0.7.15/dist/modules/libsodium.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/libsodium-wrappers@0.7.15/dist/modules/libsodium-wrappers.min.js"></script>
 <!-- App scripts (defer, in order, before Alpine) -->
-<script defer src="js/crypto.js?v=freeze-fix-20260614-2"></script>
-<script defer src="js/github.js?v=freeze-fix-20260614-2"></script>
-<script defer src="js/schema.js?v=freeze-fix-20260614-2"></script>
-<script defer src="js/db.js?v=freeze-fix-20260614-2"></script>
-<script defer src="js/render.js?v=freeze-fix-20260614-2"></script>
-<script defer src="js/app.js?v=freeze-fix-20260614-2"></script>
+<script defer src="js/crypto.js?v=summary-pager-20260614"></script>
+<script defer src="js/github.js?v=summary-pager-20260614"></script>
+<script defer src="js/schema.js?v=summary-pager-20260614"></script>
+<script defer src="js/db.js?v=summary-pager-20260614"></script>
+<script defer src="js/render.js?v=summary-pager-20260614"></script>
+<script defer src="js/app.js?v=summary-pager-20260614"></script>
 <!-- Alpine.js LAST — auto-starts after all defer scripts -->
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
 

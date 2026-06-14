@@ -250,7 +250,14 @@ document.addEventListener("alpine:init", () => {
     courses: [], lectures: [],
     currentCourse: null, currentLecture: null,
     currentPptPages: [],
+    currentSummaryText: "",
     currentSummaryHtml: "",
+    summaryPage: 1,
+    summaryPageCount: 1,
+    summaryStartChar: 0,
+    summaryEndChar: 0,
+    summaryTotalChars: 0,
+    summaryIsPaged: false,
     detailView: "summary",
     searchQuery: "", searchResults: [],
     searchCourseFilterQuery: "", searchSelectedCourseIds: [],
@@ -364,16 +371,33 @@ document.addEventListener("alpine:init", () => {
         this.currentPptPages = this.currentLecture
           ? ICS.db.getPptPages(this.currentLecture.sub_id)
           : [];
-        this.currentSummaryHtml = this.currentLecture
-          ? ICS.render.renderMarkdown(this.currentLecture.summary || "")
-          : "";
+        this.currentSummaryText = this.currentLecture?.summary || "";
+        this.summaryPage = 1;
+        this._renderSummaryPage();
         this.detailView = "summary";
       }
       else if (view !== "detail") {
+        this.currentSummaryText = "";
         this.currentSummaryHtml = "";
+        this.summaryPage = 1;
+        this.summaryPageCount = 1;
+        this.summaryStartChar = 0;
+        this.summaryEndChar = 0;
+        this.summaryTotalChars = 0;
+        this.summaryIsPaged = false;
       }
       this.view = view;
       if (view !== "lectures") this.exportDialogOpen = false;
+    },
+    _renderSummaryPage() {
+      var result = ICS.render.renderMarkdownPage(this.currentSummaryText || "", this.summaryPage);
+      this.currentSummaryHtml = result.html;
+      this.summaryPage = result.page;
+      this.summaryPageCount = result.pageCount;
+      this.summaryStartChar = result.startChar;
+      this.summaryEndChar = result.endChar;
+      this.summaryTotalChars = result.totalChars;
+      this.summaryIsPaged = result.isPaged;
     },
     _sortCoursesByStar(list) {
       // Stable two-key sort: starred first (descending = pinned), then
@@ -421,6 +445,14 @@ document.addEventListener("alpine:init", () => {
       var lec = this.nextLecture();
       if (lec) { this._go("detail", { subId: lec.sub_id }); this._scrollToTop(); }
     },
+    gotoSummaryPage(delta) {
+      if (!this.summaryIsPaged) return;
+      var next = this.summaryPage + delta;
+      if (next < 1 || next > this.summaryPageCount) return;
+      this.summaryPage = next;
+      this._renderSummaryPage();
+      this._scrollToTop();
+    },
     _scrollToTop() {
       var self = this;
       this.$nextTick(function () {
@@ -459,6 +491,20 @@ document.addEventListener("alpine:init", () => {
       return "切换到" + _DETAIL_VIEW_LABEL[next];
     },
     formatPptTimestamp(sec) { return _formatTimestamp(sec); },
+    formatCount(n) { return Number(n || 0).toLocaleString(); },
+
+    async copyFullSummary() {
+      if (!this.currentSummaryText) {
+        this._toast("没有可复制的 AI 总结", "error");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(this.currentSummaryText);
+        this._toast("已复制完整 AI 总结", "success");
+      } catch (e) {
+        this._toast("复制失败：" + (e?.message || "unknown"), "error");
+      }
+    },
 
     getExportableLectures() {
       return (this.lectures || []).filter((lec) => lec.summary && lec.summary.trim());

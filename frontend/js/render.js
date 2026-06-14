@@ -16,6 +16,7 @@ var _FORMULA_PLACEHOLDER_PREFIX = "";
 var _FORMULA_PLACEHOLDER_SUFFIX = "";
 var _SNIPPET_SCAN_LIMIT = 6000;
 var _MARKDOWN_RENDER_LIMIT = 20000;
+var _MARKDOWN_PAGE_SIZE = 12000;
 
 function _escapeHtml(text) {
   return String(text || "")
@@ -99,6 +100,25 @@ function _renderMarkdown(mdText) {
   return DOMPurify.sanitize(restored);
 }
 
+function _renderMarkdownPage(mdText, page, pageSize) {
+  var source = String(mdText || "");
+  var size = Math.max(1000, Number(pageSize) || _MARKDOWN_PAGE_SIZE);
+  var pageCount = Math.max(1, Math.ceil(source.length / size));
+  var safePage = Math.min(Math.max(1, Number(page) || 1), pageCount);
+  var start = (safePage - 1) * size;
+  var end = Math.min(source.length, start + size);
+  var chunk = source.slice(start, end);
+  return {
+    html: _renderMarkdown(chunk),
+    page: safePage,
+    pageCount: pageCount,
+    startChar: source.length ? start + 1 : 0,
+    endChar: end,
+    totalChars: source.length,
+    isPaged: source.length > size,
+  };
+}
+
 function _activateKaTeX(element) {
   if (typeof renderMathInElement !== "function") return;
   renderMathInElement(element, {
@@ -133,6 +153,7 @@ function _plainSnippet(mdText, maxLen) {
 
 window.ICS.render = {
   renderMarkdown: _renderMarkdown,
+  renderMarkdownPage: _renderMarkdownPage,
   activateKaTeX: _activateKaTeX,
   plainSnippet: _plainSnippet,
 };
