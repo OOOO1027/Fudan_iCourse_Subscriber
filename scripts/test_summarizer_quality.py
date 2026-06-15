@@ -55,6 +55,13 @@ BAD_SEPARATOR_SUMMARY = (
     + "\n".join("-" * 280 for _ in range(60))
 )
 
+BAD_SINGLE_LINE_TABLE_SUMMARY = (
+    "### 复习优先级判断\n\n"
+    "| 必须掌握 | 需要理解 | 可以略读 | 判断依据 |\n"
+    + "| 必须掌握 | "
+    + ("细胞结构与功能、膜转运、实验技术。" * 20_000)
+)
+
 BAD_TABLE_ONLY_SUMMARY = (
     "### 复习优先级判断\n\n"
     "| 类别 | 知识点 |\n"
@@ -121,6 +128,18 @@ def test_pathological_separator_summary_is_rejected():
     raise AssertionError("separator-polluted output should be rejected")
 
 
+def test_extremely_long_single_line_summary_is_rejected():
+    try:
+        Summarizer._validate_summary_text(BAD_SINGLE_LINE_TABLE_SUMMARY)
+    except Exception as e:
+        assert_true(
+            e.__class__.__name__ == "InvalidSummaryError",
+            "single-line table output should raise InvalidSummaryError",
+        )
+        return
+    raise AssertionError("single-line table output should be rejected")
+
+
 def test_table_only_priority_summary_is_rejected():
     try:
         Summarizer._validate_summary_text(BAD_TABLE_ONLY_SUMMARY)
@@ -174,6 +193,14 @@ def test_enumerator_requeues_processed_bad_summary_only():
     )
     assert_true(
         lecture_needs_processing(
+            {"sub_id": "bad-single-line", "has_playback": True},
+            {"summary": BAD_SINGLE_LINE_TABLE_SUMMARY},
+            processed | {"bad-single-line"},
+        ) is True,
+        "processed lecture with single-line table summary should be requeued",
+    )
+    assert_true(
+        lecture_needs_processing(
             {"sub_id": "bad-table", "has_playback": True},
             {"summary": BAD_TABLE_ONLY_SUMMARY},
             processed | {"bad-table"},
@@ -217,6 +244,7 @@ def test_enumerator_requeues_processed_bad_summary_only():
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
     test_pathological_separator_summary_is_rejected()
+    test_extremely_long_single_line_summary_is_rejected()
     test_table_only_priority_summary_is_rejected()
     test_normal_long_markdown_summary_is_accepted()
     test_runner_does_not_skip_bad_existing_summary()

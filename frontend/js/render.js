@@ -124,6 +124,19 @@ function _renderMarkdown(mdText) {
 function _renderMarkdownPage(mdText, page, pageSize) {
   var source = String(mdText || "");
   var size = Math.max(1000, Number(pageSize) || _MARKDOWN_PAGE_SIZE);
+  if (source.length <= _MARKDOWN_RENDER_LIMIT) {
+    return {
+      html: _renderMarkdown(source),
+      page: 1,
+      pageCount: 1,
+      startChar: source.length ? 1 : 0,
+      endChar: source.length,
+      totalChars: source.length,
+      rawTotalChars: source.length,
+      isCompacted: false,
+      isPaged: false,
+    };
+  }
   var isPaged = source.length > size;
   var displaySource = isPaged ? _compactDisplaySource(source) : source;
   var pageCount = Math.max(1, Math.ceil(displaySource.length / size));

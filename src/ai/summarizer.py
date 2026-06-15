@@ -148,6 +148,13 @@ class Summarizer:
                 f"(raw={raw_len}, compacted={compacted_len})"
             )
 
+        max_line_len = max((len(line) for line in stripped.splitlines()), default=0)
+        if raw_len >= 50_000 and max_line_len >= 50_000:
+            raise InvalidSummaryError(
+                "summary has an extremely long markdown line "
+                f"(raw={raw_len}, max_line={max_line_len})"
+            )
+
         separator_lines = [
             line for line in stripped.splitlines()
             if re.fullmatch(r"[|:\-\s]+", line.strip() or "")

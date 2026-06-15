@@ -70,4 +70,17 @@ assert(paddedPage.html.includes("核心内容"), "display chunks should compact 
 assert(paddedPage.rawTotalChars === padded.length, "raw total should preserve original length metadata");
 assert(paddedPage.totalChars < paddedPage.rawTotalChars, "display total should reflect compacted text length");
 
+parseCalls = [];
+const mediumMarkdown = [
+  "### 复习优先级判断\n\n",
+  "| 类别 | 知识点 |\n|---|---|\n| 必须掌握 | 显微镜技术、FRET、FRAP |\n\n",
+  "正文笔记\n",
+  "C".repeat(13000),
+].join("");
+const mediumPage = render.renderMarkdownPage(mediumMarkdown, 1, 12000);
+assert(mediumPage.isPaged === false, "medium summaries under render limit should render as markdown");
+assert(mediumPage.pageCount === 1, "medium markdown should not be split into plain-text pages");
+assert(parseCalls.length === 1, "medium markdown should call markdown renderer");
+assert(parseCalls[0] === mediumMarkdown.length, "medium markdown renderer should receive the full summary");
+
 console.log("frontend render paging ok");
