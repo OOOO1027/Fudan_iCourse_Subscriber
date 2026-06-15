@@ -49,6 +49,33 @@ BAD_SUMMARY = (
     + (" " * 250_000)
 )
 
+BAD_SEPARATOR_SUMMARY = (
+    "### 复习优先级判断\n\n"
+    "| 必须掌握 | 需要理解 | 可以略读 | 判断依据 |\n"
+    + "\n".join("-" * 280 for _ in range(60))
+)
+
+BAD_TABLE_ONLY_SUMMARY = (
+    "### 复习优先级判断\n\n"
+    "| 类别 | 知识点 |\n"
+    "|:------|:"
+    + ("-" * 180)
+    + "|\n"
+    + "| 必须掌握 | "
+    + "显微镜技术、FRET、FRAP、离心技术、SDS-PAGE、免疫沉淀、CRISPR/Cas9、细胞膜结构、跨膜运输。"
+    * 35
+    + " |\n"
+    + "| 需要理解 | "
+    + "扫描电子显微镜与冷冻电镜、亲和层析、糖脂和胆固醇、膜蛋白分类、脂筏模型、ATP驱动泵。"
+    * 35
+    + " |\n"
+    + "| 可以略读 | "
+    + "诺贝尔奖年份、具体仪器操作、HeLa细胞历史、部分药物耐药机制细节。"
+    * 25
+    + " |\n"
+    + "| 判断依据 | 老师强调的重点集中在实验技术和膜运输，但这里没有展开正文笔记结构。 |\n"
+)
+
 GOOD_SUMMARY = (
     "### 复习优先级判断\n\n"
     "| 级别 | 内容 |\n"
@@ -82,6 +109,30 @@ def test_pathological_whitespace_summary_is_retried():
     assert_true(summarizer.calls == 2, "summarizer should retry after rejecting bad output")
 
 
+def test_pathological_separator_summary_is_rejected():
+    try:
+        Summarizer._validate_summary_text(BAD_SEPARATOR_SUMMARY)
+    except Exception as e:
+        assert_true(
+            e.__class__.__name__ == "InvalidSummaryError",
+            "separator-polluted output should raise InvalidSummaryError",
+        )
+        return
+    raise AssertionError("separator-polluted output should be rejected")
+
+
+def test_table_only_priority_summary_is_rejected():
+    try:
+        Summarizer._validate_summary_text(BAD_TABLE_ONLY_SUMMARY)
+    except Exception as e:
+        assert_true(
+            e.__class__.__name__ == "InvalidSummaryError",
+            "table-only output should raise InvalidSummaryError",
+        )
+        return
+    raise AssertionError("table-only output should be rejected")
+
+
 def test_normal_long_markdown_summary_is_accepted():
     summarizer = FakeSummarizer([GOOD_SUMMARY])
 
@@ -112,6 +163,22 @@ def test_enumerator_requeues_processed_bad_summary_only():
             processed,
         ) is True,
         "processed lecture with malformed summary should be requeued",
+    )
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "bad-separator", "has_playback": True},
+            {"summary": BAD_SEPARATOR_SUMMARY},
+            processed | {"bad-separator"},
+        ) is True,
+        "processed lecture with separator-polluted summary should be requeued",
+    )
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "bad-table", "has_playback": True},
+            {"summary": BAD_TABLE_ONLY_SUMMARY},
+            processed | {"bad-table"},
+        ) is True,
+        "processed lecture with table-only summary should be requeued",
     )
     assert_true(
         lecture_needs_processing(
@@ -149,6 +216,8 @@ def test_enumerator_requeues_processed_bad_summary_only():
 
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
+    test_pathological_separator_summary_is_rejected()
+    test_table_only_priority_summary_is_rejected()
     test_normal_long_markdown_summary_is_accepted()
     test_runner_does_not_skip_bad_existing_summary()
     test_enumerator_requeues_processed_bad_summary_only()

@@ -148,6 +148,37 @@ class Summarizer:
                 f"(raw={raw_len}, compacted={compacted_len})"
             )
 
+        separator_lines = [
+            line for line in stripped.splitlines()
+            if re.fullmatch(r"[|:\-\s]+", line.strip() or "")
+            and line.count("-") >= 80
+        ]
+        if len(separator_lines) >= 3 or sum(
+            line.count("-") for line in separator_lines
+        ) >= 1_000:
+            raise InvalidSummaryError(
+                "summary is polluted by markdown separator lines "
+                f"(separator_lines={len(separator_lines)})"
+            )
+
+        headings = re.findall(r"^#{3,5}\s+\S+", stripped, flags=re.MULTILINE)
+        table_lines = [
+            line for line in stripped.splitlines()
+            if line.lstrip().startswith("|") and line.rstrip().endswith("|")
+        ]
+        table_chars = len(re.sub(r"\s+", "", "\n".join(table_lines)))
+        visible_chars = max(len(re.sub(r"\s+", "", stripped)), 1)
+        if (
+            len(stripped) >= 4_000
+            and len(headings) < 2
+            and len(table_lines) >= 4
+            and table_chars / visible_chars >= 0.75
+        ):
+            raise InvalidSummaryError(
+                "summary is dominated by a priority table without body notes "
+                f"(headings={len(headings)}, table_lines={len(table_lines)})"
+            )
+
     def _call_llm(self, client: OpenAI, model: str,
                   title: str, content: str) -> str:
         t0 = time.time()
