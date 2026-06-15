@@ -11,7 +11,7 @@ const ctx = {
   marked: {
     parse: (source) => {
       parseCalls.push(source.length);
-      return "<article>" + source.length + "</article>";
+      return "<article data-len=\"" + source.length + "\">" + source + "</article>";
     },
   },
   DOMPurify: { sanitize: (source) => source },
@@ -69,6 +69,27 @@ const paddedPage = render.renderMarkdownPage(padded, 1, 12000);
 assert(paddedPage.html.includes("核心内容"), "display chunks should compact excessive padding");
 assert(paddedPage.rawTotalChars === padded.length, "raw total should preserve original length metadata");
 assert(paddedPage.totalChars < paddedPage.rawTotalChars, "display total should reflect compacted text length");
+
+parseCalls = [];
+const compactableMarkdown = [
+  "### 复习优先级判断\n\n",
+  "| 复习优先级 | 内容 | 判断依据 |\n",
+  "| :--------- | ",
+  "-".repeat(5000),
+  " | ",
+  "-".repeat(5000),
+  " |\n",
+  "| 必须掌握 | 细胞膜跨膜转运、骨骼肌兴奋-收缩耦联、反射弧。 | 老师重点讲解。 |\n\n",
+  " ".repeat(11000),
+  "正文笔记",
+].join("");
+const compactablePage = render.renderMarkdownPage(compactableMarkdown, 1, 12000);
+assert(compactablePage.isPaged === false, "compactable markdown should render as markdown after whitespace compaction");
+assert(compactablePage.isCompacted === true, "compactable markdown should report compaction");
+assert(compactablePage.rawTotalChars === compactableMarkdown.length, "compacted markdown should preserve raw length metadata");
+assert(compactablePage.totalChars < compactablePage.rawTotalChars, "compacted markdown display length should be shorter than raw length");
+assert(parseCalls.length === 1, "compactable markdown should call markdown renderer");
+assert(parseCalls[0] === compactablePage.totalChars, "markdown renderer should receive compacted display text");
 
 parseCalls = [];
 const mediumMarkdown = [

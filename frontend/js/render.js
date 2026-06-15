@@ -137,8 +137,22 @@ function _renderMarkdownPage(mdText, page, pageSize) {
       isPaged: false,
     };
   }
+  var compactedSource = _compactDisplaySource(source);
+  if (compactedSource.length <= _MARKDOWN_RENDER_LIMIT) {
+    return {
+      html: _renderMarkdown(compactedSource),
+      page: 1,
+      pageCount: 1,
+      startChar: compactedSource.length ? 1 : 0,
+      endChar: compactedSource.length,
+      totalChars: compactedSource.length,
+      rawTotalChars: source.length,
+      isCompacted: compactedSource.length !== source.length,
+      isPaged: false,
+    };
+  }
   var isPaged = source.length > size;
-  var displaySource = isPaged ? _compactDisplaySource(source) : source;
+  var displaySource = isPaged ? compactedSource : source;
   var pageCount = Math.max(1, Math.ceil(displaySource.length / size));
   var safePage = Math.min(Math.max(1, Number(page) || 1), pageCount);
   var start = (safePage - 1) * size;
