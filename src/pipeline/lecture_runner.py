@@ -83,11 +83,17 @@ class LectureRunner:
         existing = self._db.get_lecture(sub_id)
         # ── Phase A — short-circuit if a v2 summary already exists ──────
         summary_ready = self._has_summary(existing)
+        needs_audio_probe = self._needs_hidden_audio_probe(lecture, existing)
         if existing and existing.get("summary") and not summary_ready:
             self._reporter.info(
                 "    Existing summary is malformed; regenerating summary."
             )
-        if summary_ready:
+        if summary_ready and needs_audio_probe:
+            self._reporter.info(
+                "    Hidden playback has summary but no transcript; "
+                "running audio diagnostics."
+            )
+        if summary_ready and not needs_audio_probe:
             self._reporter.lecture_skip_v2_done(
                 sub_title, len(existing["summary"])
             )
@@ -171,6 +177,17 @@ class LectureRunner:
     @staticmethod
     def _has_summary(existing: dict | None) -> bool:
         return has_usable_summary(existing)
+
+    @staticmethod
+    def _needs_hidden_audio_probe(
+        lecture: dict,
+        existing: dict | None,
+    ) -> bool:
+        return (
+            bool(lecture.get("hidden_playback"))
+            and existing is not None
+            and not (existing.get("transcript") or "").strip()
+        )
 
     @staticmethod
     def _has_summary_material(transcript: str, kept_pages: list[dict]) -> bool:

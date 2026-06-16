@@ -336,6 +336,30 @@ def test_ppt_only_summary_gets_source_boundary():
     )
 
 
+def test_hidden_summary_without_transcript_still_runs_audio_probe():
+    assert_true(
+        LectureRunner._needs_hidden_audio_probe(
+            {"hidden_playback": True},
+            {"summary": GOOD_SUMMARY, "transcript": ""},
+        ) is True,
+        "hidden playback with summary but no transcript should not short-circuit",
+    )
+    assert_true(
+        LectureRunner._needs_hidden_audio_probe(
+            {"hidden_playback": True},
+            {"summary": GOOD_SUMMARY, "transcript": "老师讲课文本"},
+        ) is False,
+        "hidden playback with transcript can reuse the existing summary",
+    )
+    assert_true(
+        LectureRunner._needs_hidden_audio_probe(
+            {"hidden_playback": False},
+            {"summary": GOOD_SUMMARY, "transcript": ""},
+        ) is False,
+        "normal lectures should keep the existing summary fast path",
+    )
+
+
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
     test_pathological_separator_summary_is_rejected()
@@ -347,4 +371,5 @@ if __name__ == "__main__":
     test_hidden_playback_probe_promotes_lecture_for_queueing()
     test_empty_transcript_can_still_summarize_ppt_ocr()
     test_ppt_only_summary_gets_source_boundary()
+    test_hidden_summary_without_transcript_still_runs_audio_probe()
     print("summarizer quality checks ok")
