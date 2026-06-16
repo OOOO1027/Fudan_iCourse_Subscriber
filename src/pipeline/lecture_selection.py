@@ -5,6 +5,9 @@ from collections.abc import Callable
 from src.ai.summarizer import InvalidSummaryError, Summarizer
 
 
+PPT_ONLY_SUMMARY_MARKER = "本节没有可用语音转写"
+
+
 def has_usable_summary(existing: dict | None) -> bool:
     """Whether an existing lecture row has a summary worth keeping."""
     if not (existing and existing.get("summary")):
@@ -32,11 +35,13 @@ def lecture_needs_processing(
     if existing and existing.get("summary") and not has_usable_summary(existing):
         return True
 
-    return bool(
-        lecture.get("hidden_playback")
-        and existing is not None
-        and not existing.get("summary")
-    )
+    if lecture.get("hidden_playback") and existing is not None:
+        if not existing.get("summary"):
+            return True
+        if not existing.get("transcript") and PPT_ONLY_SUMMARY_MARKER not in existing["summary"]:
+            return True
+
+    return False
 
 
 def promote_hidden_playbacks(

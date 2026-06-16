@@ -236,6 +236,25 @@ def test_enumerator_requeues_processed_bad_summary_only():
     )
     assert_true(
         lecture_needs_processing(
+            {"sub_id": "hidden_ppt_only_old", "has_playback": True, "hidden_playback": True},
+            {"summary": GOOD_SUMMARY, "transcript": ""},
+            processed | {"hidden_ppt_only_old"},
+        ) is True,
+        "processed hidden playback with old PPT-only summary should be requeued",
+    )
+    assert_true(
+        lecture_needs_processing(
+            {"sub_id": "hidden_ppt_only_fixed", "has_playback": True, "hidden_playback": True},
+            {
+                "summary": "### 材料边界说明\n本节没有可用语音转写；以下内容仅基于 PPT OCR。\n\n" + GOOD_SUMMARY,
+                "transcript": "",
+            },
+            processed | {"hidden_ppt_only_fixed"},
+        ) is False,
+        "processed hidden playback with honest PPT-only marker should be kept",
+    )
+    assert_true(
+        lecture_needs_processing(
             {"sub_id": "new", "has_playback": True},
             None,
             processed,
@@ -300,6 +319,23 @@ def test_empty_transcript_can_still_summarize_ppt_ocr():
     )
 
 
+def test_ppt_only_summary_gets_source_boundary():
+    prompt = LectureRunner._add_ppt_only_prompt_warning("", "【PPT 文字识别】\n内容")
+    assert_true(
+        "没有可用音频转录" in prompt and "不要写“老师强调”" in prompt,
+        "PPT-only prompts should forbid oral-emphasis claims",
+    )
+    summary = LectureRunner._apply_ppt_only_summary_notice("", GOOD_SUMMARY)
+    assert_true(
+        summary.startswith("### 材料边界说明\n本节没有可用语音转写"),
+        "PPT-only summaries should be explicitly marked in saved output",
+    )
+    assert_true(
+        LectureRunner._apply_ppt_only_summary_notice("老师讲了内容", GOOD_SUMMARY) == GOOD_SUMMARY,
+        "normal transcript summaries should not receive the PPT-only notice",
+    )
+
+
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
     test_pathological_separator_summary_is_rejected()
@@ -310,4 +346,5 @@ if __name__ == "__main__":
     test_enumerator_requeues_processed_bad_summary_only()
     test_hidden_playback_probe_promotes_lecture_for_queueing()
     test_empty_transcript_can_still_summarize_ppt_ocr()
+    test_ppt_only_summary_gets_source_boundary()
     print("summarizer quality checks ok")

@@ -36,6 +36,9 @@ WINDOW_SIZE = 512  # VAD window in samples (~32 ms at 16 kHz)
 BYTES_PER_SAMPLE = 4  # float32
 BYTES_PER_SECOND = SAMPLE_RATE * BYTES_PER_SAMPLE
 SILENCE_GAP_THRESHOLD_SEC = 30 * 60  # 30 min of no speech → suspected cutoff
+FALLBACK_CHUNK_SEC = 30
+FALLBACK_MIN_RMS = 1e-4
+FALLBACK_MIN_PEAK = 1e-3
 
 
 # ── Shared resource meter state (network delta tracking) ──────────────────
@@ -346,6 +349,83 @@ class Transcriber:
                     "text": text,
                 })
 
+    @staticmethod
+    def _pcm_signal_stats(samples: np.ndarray) -> tuple[float, float]:
+        if samples.size == 0:
+            return 0.0, 0.0
+        finite = samples[np.isfinite(samples)]
+        if finite.size == 0:
+            return 0.0, 0.0
+        rms = float(np.sqrt(np.mean(np.square(finite, dtype=np.float64))))
+        peak = float(np.max(np.abs(finite)))
+        return rms, peak
+
+    @staticmethod
+    def _has_pcm_signal(samples: np.ndarray) -> bool:
+        rms, peak = Transcriber._pcm_signal_stats(samples)
+        return rms >= FALLBACK_MIN_RMS or peak >= FALLBACK_MIN_PEAK
+
+    def _transcribe_pcm_file_without_vad(
+        self,
+        audio_path: str,
+        chunk_sec: int = FALLBACK_CHUNK_SEC,
+    ) -> tuple[str, list[dict]]:
+        """Fallback ASR for files where VAD found no speech segments."""
+        self._init()
+        chunk_samples = SAMPLE_RATE * chunk_sec
+        chunk_bytes = chunk_samples * BYTES_PER_SAMPLE
+        segments: list[dict] = []
+        scanned = audible = 0
+        max_rms = max_peak = 0.0
+
+        print(
+            "[Transcriber] VAD produced 0 segments; trying no-VAD "
+            f"fallback in {chunk_sec}s chunks.",
+            flush=True,
+        )
+        with open(audio_path, "rb") as f:
+            offset_samples = 0
+            while True:
+                raw = f.read(chunk_bytes)
+                if not raw:
+                    break
+                samples = np.frombuffer(raw, dtype=np.float32)
+                if samples.size == 0:
+                    break
+                scanned += 1
+                rms, peak = self._pcm_signal_stats(samples)
+                max_rms = max(max_rms, rms)
+                max_peak = max(max_peak, peak)
+                if self._has_pcm_signal(samples):
+                    audible += 1
+                    stream = self._recognizer.create_stream()
+                    stream.accept_waveform(SAMPLE_RATE, samples)
+                    self._recognizer.decode_stream(stream)
+                    text = _postprocess_segment(stream.result.text)
+                    if text:
+                        start_ms = int(offset_samples / SAMPLE_RATE * 1000)
+                        end_ms = int(
+                            (offset_samples + samples.size) / SAMPLE_RATE * 1000
+                        )
+                        segments.append({
+                            "start_ms": start_ms,
+                            "end_ms": end_ms,
+                            "text": text,
+                        })
+                offset_samples += samples.size
+
+        transcript = " ".join(s["text"] for s in segments)
+        print(
+            "[Transcriber] no-VAD fallback done: "
+            f"{len(transcript)} chars, {len(segments)} segments, "
+            f"{audible}/{scanned} audible chunks, "
+            f"max_rms={max_rms:.6f}, max_peak={max_peak:.6f}",
+            flush=True,
+        )
+        self._last_transcript = transcript
+        self._last_segments = segments
+        return transcript, segments
+
     # ── Shared consumer core ────────────────────────────────────────────
 
     def _consume_pcm_stream(
@@ -592,7 +672,7 @@ class Transcriber:
                 # handle already reflects all bytes ffmpeg wrote.
                 return ffmpeg_proc.poll() is not None
 
-            return self._consume_pcm_stream(
+            transcript, segments = self._consume_pcm_stream(
                 read_fn=read_fn,
                 is_eof_fn=is_eof_fn,
                 stderr_provider=lambda: b"".join(stderr_chunks),
@@ -601,6 +681,11 @@ class Transcriber:
                 wait_on_empty_sec=0.1,
                 label="tail",
             )
+            if not segments:
+                transcript, segments = self._transcribe_pcm_file_without_vad(
+                    audio_path,
+                )
+            return transcript, segments
         finally:
             f.close()
 

@@ -34,7 +34,10 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from src.ai import bucketer
-from src.pipeline.lecture_selection import has_usable_summary
+from src.pipeline.lecture_selection import (
+    PPT_ONLY_SUMMARY_MARKER,
+    has_usable_summary,
+)
 from src.pipeline.ppt_pipeline import PPTPipeline
 from src.ai.transcriber import IncompleteAudioError, NoAudioStreamError
 
@@ -175,6 +178,34 @@ class LectureRunner:
             return True
         return any((page.get("text") or "").strip() for page in kept_pages or [])
 
+    @staticmethod
+    def _add_ppt_only_prompt_warning(transcript: str, prompt_text: str) -> str:
+        if transcript and transcript.strip():
+            return prompt_text
+        warning = (
+            "【材料边界】本节没有可用音频转录，下面只有 PPT OCR。"
+            "只能按 PPT 页面内容、结构位置、重复出现和推导完整度做复习整理；"
+            "不要写“老师强调”“老师提到”“课堂口头提示”“考试提示”等"
+            "只有音频转录才能支持的判断。若无法判断口头重点，必须明确写"
+            "“无语音转写，无法判断老师口头强调”。\n\n"
+        )
+        return warning + prompt_text
+
+    @staticmethod
+    def _apply_ppt_only_summary_notice(transcript: str, summary: str) -> str:
+        if transcript and transcript.strip():
+            return summary
+        if PPT_ONLY_SUMMARY_MARKER in summary:
+            return summary
+        notice = (
+            "### 材料边界说明\n"
+            "本节没有可用语音转写；以下内容仅基于 PPT OCR。"
+            "它不能代表老师口头强调、课堂临场讲解、板书补充或考试提示。"
+            "复习优先级只能依据 PPT 内容出现频率、结构位置、推导完整度和"
+            "跨章节基础性判断。\n\n"
+        )
+        return notice + summary
+
     def _schedule_next(self, next_info: Optional[tuple[str, str]]):
         if next_info is None:
             return
@@ -258,6 +289,9 @@ class LectureRunner:
             prompt_text, mode = bucketer.assemble(
                 transcript, transcript_segments, kept_pages,
             )
+            prompt_text = self._add_ppt_only_prompt_warning(
+                transcript, prompt_text,
+            )
             self._reporter.info(
                 f"    [Time] Generating summary at "
                 f"{time.strftime('%H:%M:%S')}"
@@ -266,6 +300,7 @@ class LectureRunner:
             summary, model_used = self._summarizer.summarize(
                 course_title, prompt_text,
             )
+            summary = self._apply_ppt_only_summary_notice(transcript, summary)
             self._reporter.info(
                 f"    [OK] Summary by {model_used}: {len(summary)} chars"
             )
