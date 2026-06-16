@@ -135,15 +135,18 @@ class LectureRunner:
                 )
 
         # ── Phase F — bucketed-prompt LLM summary ──────────────────────
-        if not transcript.strip():
-            self._reporter.info("    Empty transcript, skipping summary.")
+        kept_pages = self._db.get_done_ppt_pages(sub_id)
+        if not self._has_summary_material(transcript, kept_pages):
+            self._reporter.info(
+                "    Empty transcript and PPT OCR, skipping summary."
+            )
             self._release_audio(sub_id)
             self._db.mark_processed(sub_id)
             self._db.clear_error(sub_id)
             return None
 
         summary = self._summarize(
-            sub_id, course_title, transcript, transcript_segments,
+            sub_id, course_title, transcript, transcript_segments, kept_pages,
         )
         if summary is None:
             self._release_audio(sub_id)
@@ -165,6 +168,12 @@ class LectureRunner:
     @staticmethod
     def _has_summary(existing: dict | None) -> bool:
         return has_usable_summary(existing)
+
+    @staticmethod
+    def _has_summary_material(transcript: str, kept_pages: list[dict]) -> bool:
+        if transcript and transcript.strip():
+            return True
+        return any((page.get("text") or "").strip() for page in kept_pages or [])
 
     def _schedule_next(self, next_info: Optional[tuple[str, str]]):
         if next_info is None:
@@ -241,9 +250,11 @@ class LectureRunner:
         return transcript, segments
 
     def _summarize(self, sub_id: str, course_title: str, transcript: str,
-                   transcript_segments: list[dict] | None) -> Optional[str]:
+                   transcript_segments: list[dict] | None,
+                   kept_pages: list[dict] | None = None) -> Optional[str]:
         try:
-            kept_pages = self._db.get_done_ppt_pages(sub_id)
+            if kept_pages is None:
+                kept_pages = self._db.get_done_ppt_pages(sub_id)
             prompt_text, mode = bucketer.assemble(
                 transcript, transcript_segments, kept_pages,
             )

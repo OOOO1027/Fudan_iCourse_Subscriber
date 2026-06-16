@@ -29,7 +29,14 @@ def lecture_needs_processing(
     if sub_id not in processed_sub_ids:
         return True
 
-    return bool(existing and existing.get("summary") and not has_usable_summary(existing))
+    if existing and existing.get("summary") and not has_usable_summary(existing):
+        return True
+
+    return bool(
+        lecture.get("hidden_playback")
+        and existing is not None
+        and not existing.get("summary")
+    )
 
 
 def promote_hidden_playbacks(

@@ -228,6 +228,14 @@ def test_enumerator_requeues_processed_bad_summary_only():
     )
     assert_true(
         lecture_needs_processing(
+            {"sub_id": "hidden_no_summary", "has_playback": True, "hidden_playback": True},
+            {"summary": ""},
+            processed | {"hidden_no_summary"},
+        ) is True,
+        "processed hidden playback without a summary should be requeued",
+    )
+    assert_true(
+        lecture_needs_processing(
             {"sub_id": "new", "has_playback": True},
             None,
             processed,
@@ -277,6 +285,21 @@ def test_hidden_playback_probe_promotes_lecture_for_queueing():
     )
 
 
+def test_empty_transcript_can_still_summarize_ppt_ocr():
+    assert_true(
+        LectureRunner._has_summary_material("", [{"text": "PPT OCR 内容"}]) is True,
+        "PPT OCR text should be enough to generate a fallback summary",
+    )
+    assert_true(
+        LectureRunner._has_summary_material("", [{"text": "   "}]) is False,
+        "blank PPT OCR should not generate an empty summary request",
+    )
+    assert_true(
+        LectureRunner._has_summary_material("老师讲了重点", []) is True,
+        "normal transcript text should still be enough to summarize",
+    )
+
+
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
     test_pathological_separator_summary_is_rejected()
@@ -286,4 +309,5 @@ if __name__ == "__main__":
     test_runner_does_not_skip_bad_existing_summary()
     test_enumerator_requeues_processed_bad_summary_only()
     test_hidden_playback_probe_promotes_lecture_for_queueing()
+    test_empty_transcript_can_still_summarize_ppt_ocr()
     print("summarizer quality checks ok")
