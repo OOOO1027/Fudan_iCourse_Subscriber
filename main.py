@@ -22,7 +22,10 @@ from src.runtime import config
 from src.data.database import Database
 from src.api.emailer import Emailer
 from src.api.icourse import ICourseClient
-from src.pipeline.lecture_selection import lecture_needs_processing
+from src.pipeline.lecture_selection import (
+    lecture_needs_processing,
+    promote_hidden_playbacks,
+)
 from src.pipeline.lecture_runner import LectureRunner
 from src.runtime.reporter import Reporter
 from src.runtime.scheduler import Scheduler
@@ -103,6 +106,27 @@ def _enumerate_lectures(client: ICourseClient, db: Database,
                     seen_sub_titles.add(title)
                 deduped.append(lec)
             lectures = deduped
+
+            def _has_hidden_video(sub_id: str) -> bool:
+                try:
+                    return bool(client.get_video_url(course_id, sub_id))
+                except Exception as e:
+                    print(
+                        f"  [HiddenPlayback] Probe failed for {sub_id}: "
+                        f"{type(e).__name__}: {e}",
+                        flush=True,
+                    )
+                    return False
+
+            lectures, hidden_playback_count = promote_hidden_playbacks(
+                lectures, _has_hidden_video,
+            )
+            if hidden_playback_count:
+                print(
+                    f"  [HiddenPlayback] Promoted {hidden_playback_count} "
+                    "lecture(s) with deep video URLs.",
+                    flush=True,
+                )
 
             known_processed = db.get_processed_sub_ids(course_id)
             new_lectures = [

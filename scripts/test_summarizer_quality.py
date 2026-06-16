@@ -34,7 +34,10 @@ sys.modules.setdefault("src.ai.transcriber", fake_transcriber)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.ai.summarizer import Summarizer
-from src.pipeline.lecture_selection import lecture_needs_processing
+from src.pipeline.lecture_selection import (
+    lecture_needs_processing,
+    promote_hidden_playbacks,
+)
 from src.pipeline.lecture_runner import LectureRunner
 
 
@@ -241,6 +244,39 @@ def test_enumerator_requeues_processed_bad_summary_only():
     )
 
 
+def test_hidden_playback_probe_promotes_lecture_for_queueing():
+    lectures = [
+        {"sub_id": "576352", "sub_title": "2026-03-23第6-8节", "has_playback": False},
+        {"sub_id": "585415", "sub_title": "2026-04-06第6-8节", "has_playback": False},
+        {"sub_id": "566700", "sub_title": "2026-03-09第6-8节", "has_playback": True},
+    ]
+    probed = []
+
+    def has_hidden_video(sub_id):
+        probed.append(sub_id)
+        return sub_id == "576352"
+
+    promoted, promoted_count = promote_hidden_playbacks(lectures, has_hidden_video)
+
+    assert_true(promoted_count == 1, "only the hidden-video lecture should be promoted")
+    assert_true(
+        promoted[0]["has_playback"] is True and promoted[0]["hidden_playback"] is True,
+        "hidden video lecture should become eligible for processing",
+    )
+    assert_true(
+        lecture_needs_processing(promoted[0], None, set()) is True,
+        "promoted hidden video lecture should enter the processing queue",
+    )
+    assert_true(
+        promoted[1]["has_playback"] is False,
+        "lecture with no deep video URL should remain non-playback",
+    )
+    assert_true(
+        probed == ["576352", "585415"],
+        "existing playback lectures should not trigger hidden-video probes",
+    )
+
+
 if __name__ == "__main__":
     test_pathological_whitespace_summary_is_retried()
     test_pathological_separator_summary_is_rejected()
@@ -249,4 +285,5 @@ if __name__ == "__main__":
     test_normal_long_markdown_summary_is_accepted()
     test_runner_does_not_skip_bad_existing_summary()
     test_enumerator_requeues_processed_bad_summary_only()
+    test_hidden_playback_probe_promotes_lecture_for_queueing()
     print("summarizer quality checks ok")

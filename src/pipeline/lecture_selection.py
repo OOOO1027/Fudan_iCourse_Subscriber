@@ -1,5 +1,7 @@
 """Lecture queue selection helpers."""
 
+from collections.abc import Callable
+
 from src.ai.summarizer import InvalidSummaryError, Summarizer
 
 
@@ -28,3 +30,28 @@ def lecture_needs_processing(
         return True
 
     return bool(existing and existing.get("summary") and not has_usable_summary(existing))
+
+
+def promote_hidden_playbacks(
+    lectures: list[dict],
+    has_video_url: Callable[[str], bool],
+) -> tuple[list[dict], int]:
+    """Mark non-playback lectures as playable when a deep video URL exists."""
+    promoted: list[dict] = []
+    promoted_count = 0
+
+    for lecture in lectures:
+        if lecture.get("has_playback"):
+            promoted.append(lecture)
+            continue
+
+        sub_id = str(lecture["sub_id"])
+        if has_video_url(sub_id):
+            lecture = dict(lecture)
+            lecture["has_playback"] = True
+            lecture["hidden_playback"] = True
+            promoted_count += 1
+
+        promoted.append(lecture)
+
+    return promoted, promoted_count
