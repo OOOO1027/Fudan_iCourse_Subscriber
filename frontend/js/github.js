@@ -28,8 +28,20 @@ function _detectRepo() {
   return null;
 }
 
+async function _ghRead(url, options) {
+  const res = await fetch(url, options);
+  // An expired optional PAT must not block reads from a public repository.
+  // Only GET requests use this helper; writes still require valid credentials.
+  if (res.status === 401 && options.headers.Authorization) {
+    const headers = { ...options.headers };
+    delete headers.Authorization;
+    return fetch(url, { ...options, headers });
+  }
+  return res;
+}
+
 async function _getLatestCommitSha(owner, repo, branch, token) {
-  const res = await fetch(
+  const res = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/ref/heads/${branch}`,
     { headers: _ghHeaders(token) }
   );
@@ -49,14 +61,14 @@ async function _fetchEncryptedDB(owner, repo, branch, token) {
   const commitSha = await _getLatestCommitSha(owner, repo, branch, token);
 
   // 2) Walk commit → tree → data/ subtree to find the DB file
-  const commitRes = await fetch(
+  const commitRes = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/commits/${commitSha}`,
     { headers: _ghHeaders(token) }
   );
   if (!commitRes.ok) throw new Error(`Failed to get commit: ${commitRes.status}`);
   const treeSha = (await commitRes.json()).tree.sha;
 
-  const treeRes = await fetch(
+  const treeRes = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/trees/${treeSha}`,
     { headers: _ghHeaders(token) }
   );
@@ -66,7 +78,7 @@ async function _fetchEncryptedDB(owner, repo, branch, token) {
   const dataEntry = treeData.tree.find((e) => e.path === "data" && e.type === "tree");
   if (!dataEntry) throw new Error("'data/' directory not found on data branch.");
 
-  const subTreeRes = await fetch(
+  const subTreeRes = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/trees/${dataEntry.sha}`,
     { headers: _ghHeaders(token) }
   );
@@ -82,7 +94,7 @@ async function _fetchEncryptedDB(owner, repo, branch, token) {
   if (!fileEntry) throw new Error("Database file not found on data branch.");
 
   // 3) Download blob as raw binary
-  const blobRes = await fetch(
+  const blobRes = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/blobs/${fileEntry.sha}`,
     {
       headers: {
@@ -97,7 +109,7 @@ async function _fetchEncryptedDB(owner, repo, branch, token) {
 }
 
 async function _fetchBlobBytes(owner, repo, blobSha, token) {
-  const res = await fetch(
+  const res = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/blobs/${blobSha}`,
     {
       headers: {
@@ -120,14 +132,14 @@ async function _fetchShardManifest(owner, repo, branch, token) {
   //     legacy?: { name, sha, compressed } }  // legacy only
   const commitSha = await _getLatestCommitSha(owner, repo, branch, token);
 
-  const commitRes = await fetch(
+  const commitRes = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/commits/${commitSha}`,
     { headers: _ghHeaders(token) }
   );
   if (!commitRes.ok) throw new Error(`Failed to get commit: ${commitRes.status}`);
   const treeSha = (await commitRes.json()).tree.sha;
 
-  const treeRes = await fetch(
+  const treeRes = await _ghRead(
     `${_GH_API}/repos/${owner}/${repo}/git/trees/${treeSha}?recursive=1`,
     { headers: _ghHeaders(token) }
   );

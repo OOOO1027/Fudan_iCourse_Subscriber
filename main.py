@@ -15,6 +15,7 @@ Anything more interesting belongs in one of ``src/*`` modules.
 """
 
 import datetime
+import os
 import time
 import traceback
 
@@ -322,13 +323,19 @@ def run():
     # or immediately if the database has no catalog data yet.
     has_catalog = db.has_all_courses()
     today = datetime.datetime.now().day
-    if not has_catalog or today in (5, 25):
+    if not config.COURSE_IDS or not has_catalog or today in (5, 25):
         _crawl_semester_catalog(client, db, reporter)
     else:
         reporter.info("Skipping catalog crawl (has data, not the 5th or 25th).")
 
     if not config.COURSE_IDS:
         # Crawl-only mode: nothing to process, just persist + exit.
+        queries = [q.strip() for q in os.environ.get("CATALOG_QUERY", "").split(",") if q.strip()]
+        if queries:
+            import json
+            for row in db.list_all_courses():
+                if any(q in (row.get("title") or "") for q in queries):
+                    print("[CatalogMatch] " + json.dumps(row, ensure_ascii=False), flush=True)
         reporter.info("\n[Crawl-only mode] No COURSE_IDS — skipping lectures.")
         reporter.run_footer()
         return

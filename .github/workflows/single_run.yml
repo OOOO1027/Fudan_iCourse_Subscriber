@@ -5,7 +5,11 @@ on:
     inputs:
       course_ids:
         description: "Comma-separated course IDs to process (e.g. 30004,30005)"
-        required: true
+        required: false
+        type: string
+      catalog_query:
+        description: "Optional comma-separated course names to find in the catalog; leave course_ids empty for catalog-only mode"
+        required: false
         type: string
 
 permissions:
@@ -157,6 +161,7 @@ jobs:
           StuId: ${{ secrets.STUID }}
           UISPsw: ${{ secrets.UISPSW }}
           COURSE_IDS: ${{ inputs.course_ids }}
+          CATALOG_QUERY: ${{ inputs.catalog_query }}
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
