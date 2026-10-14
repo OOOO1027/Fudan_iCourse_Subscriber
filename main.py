@@ -46,17 +46,19 @@ def login_with_retry(max_attempts: int = 5) -> WebVPNSession:
     row before letting one through.
     """
     for attempt in range(max_attempts):
+        vpn = WebVPNSession()
         try:
-            vpn = WebVPNSession()
             print(f"\n[Login] WebVPN (attempt {attempt + 1}/{max_attempts})...")
             vpn.login()
             print("[Login] iCourse CAS...")
             vpn.authenticate_icourse()
             return vpn
         except Exception as e:
+            vpn.session.close()
             if attempt < max_attempts - 1:
-                print(f"  Failed: {type(e).__name__}: {e}; retrying...")
-                time.sleep(5)
+                delay = min(30 * (2 ** attempt), 240)
+                print(f"  Failed: {type(e).__name__}: {e}; retrying in {delay}s...")
+                time.sleep(delay)
             else:
                 raise
 

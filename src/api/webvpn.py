@@ -599,14 +599,15 @@ class WebVPNSession:
     def _establish_session(self, ticket_url: str):
         """Step 7: Follow the ticket URL to establish WebVPN session.
 
-        The WebVPN server can be very slow. We first try without following
-        redirects to capture the session cookie quickly, then verify.
+        A 200 login page or an anonymous gateway cookie is not evidence
+        of authentication. Verify the response before accepting a session.
         """
         for attempt in range(3):
             try:
                 resp = self.session.get(
                     ticket_url, allow_redirects=True, timeout=90
                 )
+                self._validate_session_response(resp)
                 if resp.status_code == 200:
                     print("    Session established.")
                     return
@@ -614,16 +615,37 @@ class WebVPNSession:
                     f"Failed to establish WebVPN session (status={resp.status_code})"
                 )
             except requests.exceptions.Timeout:
-                # Check if session was established despite timeout
-                # (server may have set cookies before the timeout)
+                # Gateway cookies are issued even to anonymous visitors.
+                # Probe a protected URL instead of accepting cookie presence.
                 has_ticket = any(
                     "wengine_vpn_ticket" in c.name
                     for c in self.session.cookies
                 )
                 if has_ticket:
-                    print("    Session cookie set despite timeout.")
+                    probe = self.session.get(
+                        get_vpn_url(config.ICOURSE_BASE + "/"),
+                        allow_redirects=True,
+                        timeout=60,
+                    )
+                    self._validate_session_response(probe)
+                    print("    Session verified after timeout.")
                     return
                 if attempt < 2:
                     print(f"    Timeout, retrying ({attempt + 2}/3)...")
                     continue
                 raise
+
+    @staticmethod
+    def _validate_session_response(resp):
+        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"WebVPN session verification failed (status={resp.status_code})"
+            )
+        parsed = urlparse(resp.url)
+        if (parsed.hostname == urlparse(config.WEBVPN_BASE).hostname
+                and parsed.path.rstrip("/") == "/login"):
+            raise RuntimeError(
+                "WebVPN rejected the session and returned its login page; "
+                "a fresh CAS login is required"
+            )

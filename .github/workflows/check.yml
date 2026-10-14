@@ -1,6 +1,13 @@
 name: iCourse Check
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/api/webvpn.py'
+      - 'main.py'
+      - 'tests/test_webvpn_session.py'
+      - '.github/workflows/check.yml'
   schedule:
     # Every two hours, 08:36-22:36 Asia/Shanghai (UTC+8).
     - cron: "36 0-14/2 * * *"
@@ -36,6 +43,9 @@ jobs:
       - name: Install Python dependencies
         if: steps.cache-pip.outputs.cache-hit != 'true'
         run: pip install -r requirements.txt
+
+      - name: Test WebVPN session validation
+        run: python -m unittest discover -s tests -p test_webvpn_session.py -v
 
       - name: Install ffmpeg
         run: |
