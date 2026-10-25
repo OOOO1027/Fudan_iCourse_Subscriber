@@ -416,34 +416,43 @@ class WebVPNSession:
     # --- Private authentication steps ---
 
     def _get_auth_context(self) -> tuple[str, str]:
-        """Step 1: GET authenticate endpoint, extract lck from redirect."""
+        """Start at the gateway so CAS and WebVPN share browser context."""
         service_url = f"{config.WEBVPN_BASE}/login?cas_login=true"
-        url = (
+        auth_url = (
             f"{config.IDP_BASE}/idp/authCenter/authenticate"
             f"?service={quote(service_url, safe='')}"
         )
-        resp = self.session.get(url, allow_redirects=False, timeout=60)
-
-        # Follow redirects manually to extract lck
-        location = resp.headers.get("Location", "")
-        while resp.status_code in (301, 302) and "lck=" not in location:
-            resp = self.session.get(location, allow_redirects=False, timeout=60)
+        url = service_url
+        used_direct_auth = False
+        trusted_hosts = {
+            urlparse(config.WEBVPN_BASE).hostname,
+            urlparse(config.IDP_BASE).hostname,
+        }
+        for hop in range(10):
+            resp = self.session.get(url, allow_redirects=False, timeout=60)
+            resp.raise_for_status()
             location = resp.headers.get("Location", "")
-
-        if resp.status_code in (301, 302):
-            location = resp.headers.get("Location", "")
-
-        # Extract lck parameter
-        lck_match = re.search(r"[?&]lck=([^&]+)", location)
-        if not lck_match:
+            if resp.status_code in (301, 302, 303, 307, 308) and location:
+                target = urljoin(url, html_mod.unescape(location))
+                parsed = urlparse(target)
+                if parsed.scheme != "https" or parsed.hostname not in trusted_hosts:
+                    raise RuntimeError("Unexpected destination in WebVPN login redirect")
+                lck_match = re.search(r"[?&]lck=([^&]+)", target)
+                if lck_match:
+                    print(f"    Gateway context initialized; lck: OK ({hop + 1} hops)")
+                    return lck_match.group(1), config.WEBVPN_BASE
+                url = target
+                continue
+            # Some gateway versions render a login page instead of redirecting.
+            # Keep its cookies when initiating the existing CAS endpoint.
+            if not used_direct_auth:
+                url = auth_url
+                used_direct_auth = True
+                continue
             raise RuntimeError(
                 f"Failed to extract lck from redirect (status={resp.status_code})"
             )
-
-        lck = lck_match.group(1)
-        entity_id = config.WEBVPN_BASE
-        print("    lck: OK")
-        return lck, entity_id
+        raise RuntimeError("WebVPN authentication redirect limit exceeded")
 
     def _query_auth_methods(
         self, lck: str, entity_id: str
@@ -606,6 +615,13 @@ class WebVPNSession:
             try:
                 resp = self.session.get(
                     ticket_url, allow_redirects=True, timeout=90
+                )
+                parsed = urlparse(resp.url)
+                print(
+                    "    Gateway callback: "
+                    f"status={resp.status_code}, host={parsed.hostname}, "
+                    f"redirects={len(resp.history)}, "
+                    f"login_page={parsed.path.rstrip('/') == '/login'}"
                 )
                 self._validate_session_response(resp)
                 if resp.status_code == 200:
