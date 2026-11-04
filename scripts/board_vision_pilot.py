@@ -139,10 +139,17 @@ def main():
             if not 180 <= duration <= 21600:
                 raise RuntimeError('Unexpected video duration')
             report['duration_s'] = duration
+            def fresh_stream():
+                signed = client.get_video_url(course_id, str(chosen['sub_id']))
+                if not signed:
+                    raise RuntimeError('Replay address no longer available')
+                return client.get_stream_params(signed)
+
             # Three separate windows are a pilot, not full lecture coverage.
             starts = [int((duration - 90) * ratio) for ratio in (0.15, 0.5, 0.85)]
             transcriber = Transcriber()
             for clip_index, start in enumerate(starts):
+                stream, headers = fresh_stream()
                 audio_path = evidence / f'audio-{clip_index}.wav'
                 media_command(['ffmpeg', '-nostdin', '-v', 'error', '-headers', headers,
                                '-ss', str(start), '-i', stream, '-t', '90', '-vn',
@@ -152,6 +159,7 @@ def main():
                 report['clips'].append({'start_ms': start * 1000, 'end_ms': (start + 90) * 1000,
                                         'audio': audio_path.name, 'transcript': text, 'segments': shifted})
                 for offset in (0, 30, 60, 89):
+                    stream, headers = fresh_stream()
                     timestamp = start + offset
                     frame_path = evidence / f'frame-{timestamp:06d}.png'
                     # Native decoded resolution, lossless PNG; no crop, resize, or annotation.
