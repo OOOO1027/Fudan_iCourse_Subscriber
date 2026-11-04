@@ -56,5 +56,13 @@ class SelectorTest(unittest.TestCase):
             self.selector.add(f,t)
         self.assertEqual(self.saved, [(0,'initial')])
 
+    def test_board_reveal_reestablishes_baseline(self):
+        screen = np.full_like(self.blank,230)
+        for t,f in [(0,screen),(10,self.blank),(15,self.blank),
+                    (25,self.written),(30,self.written)]:
+            self.selector.add(f,t)
+        self.assertGreaterEqual(sum(why in ('persistent_visual_change',
+            'possible_erasure_or_board_move') for _,why in self.saved),2)
+
 
 if __name__ == '__main__': unittest.main()

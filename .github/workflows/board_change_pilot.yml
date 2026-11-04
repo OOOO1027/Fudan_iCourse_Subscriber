@@ -34,6 +34,10 @@ jobs:
           tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
           wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
       - run: python scripts/test_board_selector.py
+      - name: Reuse verified transcript from the same lecture
+        run: |
+          git fetch origin adaptive-board-evidence
+          git show FETCH_HEAD:evidence/41800144132-1/report.json.enc > "$RUNNER_TEMP/previous-board-report.enc"
       - name: Full lecture selection and alignment trial
         timeout-minutes: 85
         env:
@@ -41,6 +45,7 @@ jobs:
           UISPsw: ${{ secrets.UISPSW }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           PILOT_OUTPUT: ${{ runner.temp }}/adaptive-evidence
+          PILOT_REUSE_REPORT: ${{ runner.temp }}/previous-board-report.enc
         run: python -u scripts/board_change_pilot.py
       - name: Retain encrypted originals and report
         if: always()

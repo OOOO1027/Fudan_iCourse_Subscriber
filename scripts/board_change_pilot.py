@@ -126,7 +126,17 @@ def main():
             selector.finish()
             print('Full scan:', len(samples), 'samples; retained:', len(selected), 'originals', flush=True)
             stage = 'transcribe'
-            transcript, segments = Transcriber().transcribe_video(str(scratch/'audio.wav'))
+            reuse = os.environ.get('PILOT_REUSE_REPORT')
+            if reuse:
+                previous = json.loads(decrypt(Path(reuse).read_bytes(), password))
+                if (previous['course_id'] != report['course_id'] or previous['sub_id'] != report['sub_id']
+                        or abs(previous['duration_s']-duration) > 1 or not previous.get('segments')):
+                    raise RuntimeError('Transcript cache identity mismatch')
+                transcript, segments = previous['transcript'], previous['segments']
+                report['transcript_source'] = 'verified previous full-lecture trial 41800144132'
+                print('Reused existing full-lecture transcript:', len(segments), 'segments', flush=True)
+            else:
+                transcript, segments = Transcriber().transcribe_video(str(scratch/'audio.wav'))
             report['transcript'] = transcript
             report['segments'] = segments
             report['alignment'] = 'temporal_overlap_only_not_teacher_emphasis'
@@ -152,6 +162,7 @@ def main():
                 ImageDraw.Draw(sheet).text((5,index*240+222),f'{stamp/1000:.3f}s | full / left / center / right',fill='black')
                 entry = next(x for x in report['frames'] if x['timestamp_ms']==stamp)
                 entry['ocr_scope'] = 'left, center, right native crops; 12 retained timestamps sampled for review'
+                entry['vision_review_status'] = 'unverified_do_not_use_as_summary_evidence'
                 entry['vision'] = {}
                 for col, (name, bounds) in enumerate(REGIONS.items(), start=1):
                     region_image = Image.fromarray(crop(pixels, bounds))
@@ -164,8 +175,11 @@ def main():
                     sheet.paste(zoom,(col*320,index*240))
                     try:
                         entry['vision'][name] = {'text':image_request(api,'deepseek-flash',region_path.read_bytes(),
-                            '只转录图片中真实可见的黑板笔迹和公式。逐行记录，不解释、不补全。'
-                            '看不清写[无法辨认]。没有笔迹则写没有可见板书。不要推断老师强调或考试重点。')}
+                            '这是低清晰度课堂截图。只转录绿色黑板上确实能逐字看清的粉笔笔迹。'
+                            '忽略投影幕、网页、讲台和衣服。擦痕不算笔迹。'
+                            '看不清的每个词或公式位置写[无法辨认]，不要根据课程常识补全。'
+                            '宁可少写也不要猜测。逐行记录，不解释、不改错。'
+                            '没有笔迹则写没有可见板书。禁止推断老师强调或考试重点。')}
                     except Exception as exc:
                         entry['vision'][name] = {'error':type(exc).__name__}
                 print('Crop OCR checked:', stamp, flush=True)

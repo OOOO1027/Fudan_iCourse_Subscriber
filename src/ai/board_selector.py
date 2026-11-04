@@ -36,7 +36,9 @@ def features(frame, region):
 def distance(current, previous):
     valid = current['mask'] & previous['mask']
     if valid.mean() < .25:
-        return 0.0
+        # A projection screen can initially hide the whole board. Allow a new
+        # visible board to establish a baseline after two stable observations.
+        return 1.0 if current['mask'].mean() >= .25 else 0.0
     delta = (current['gray'] - previous['gray'])[valid]
     # Remove uniform exposure shifts before judging a persistent board change.
     return float(np.abs(delta - np.median(delta)).mean())
