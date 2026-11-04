@@ -1,0 +1,53 @@
+name: Prepare Encrypted Board Previews
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/board_evidence_transfer.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: board-vision-pilot
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: board-vision-evidence
+      - name: Encode retained ciphertext for the text-only download connector
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          from pathlib import Path
+          source = Path('evidence/41791216701-1')
+          target = Path('preview-transfer/41791216701-1')
+          target.mkdir(parents=True, exist_ok=True)
+          manifest = []
+          for stamp in (1500, 5002, 8503):
+              filename = f'frame-{stamp:06d}.png.enc'
+              raw = (source / filename).read_bytes()
+              encoded = base64.b64encode(raw).decode('ascii')
+              parts = []
+              for index, offset in enumerate(range(0, len(encoded), 300000)):
+                  name = f'{filename}.b64.{index:03d}'
+                  (target / name).write_text(encoded[offset:offset + 300000])
+                  parts.append(name)
+              manifest.append({'filename': filename, 'parts': parts,
+                               'sha256': hashlib.sha256(raw).hexdigest()})
+          (target / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+          print('Prepared three encrypted previews; no plaintext images or secrets published.')
+          PY
+      - name: Preserve encrypted transfer files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add preview-transfer/41791216701-1
+          if ! git diff --cached --quiet; then
+            git commit -m 'Prepare ciphertext-only transport for retained board previews'
+            git push origin HEAD:board-vision-evidence
+          fi
