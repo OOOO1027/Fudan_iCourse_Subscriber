@@ -47,7 +47,8 @@ def media_command(args, timeout=180):
 
 def image_request(client, model, image_bytes, prompt):
     result = client.chat.completions.create(
-        model=model, max_tokens=1600,
+        model=model, max_tokens=4096,
+        extra_body={'thinking': {'type': 'disabled'}},
         messages=[{'role': 'user', 'content': [
             {'type': 'text', 'text': prompt},
             {'type': 'image_url', 'image_url': {
