@@ -1,0 +1,39 @@
+[
+  {
+    "filename": "frame-001500.png.enc",
+    "parts": [
+      "frame-001500.png.enc.b64.000",
+      "frame-001500.png.enc.b64.001",
+      "frame-001500.png.enc.b64.002",
+      "frame-001500.png.enc.b64.003",
+      "frame-001500.png.enc.b64.004",
+      "frame-001500.png.enc.b64.005"
+    ],
+    "sha256": "c5b93b4a0e7c52f25fe68b1b6f5182145bc9680c6f18f8e27e7c612d86ff71dc"
+  },
+  {
+    "filename": "frame-005002.png.enc",
+    "parts": [
+      "frame-005002.png.enc.b64.000",
+      "frame-005002.png.enc.b64.001",
+      "frame-005002.png.enc.b64.002",
+      "frame-005002.png.enc.b64.003",
+      "frame-005002.png.enc.b64.004",
+      "frame-005002.png.enc.b64.005"
+    ],
+    "sha256": "a9c86ee280435367a9f7fcbc978be6fac1805b02287864e5a76418b6d1b9a0b1"
+  },
+  {
+    "filename": "frame-008503.png.enc",
+    "parts": [
+      "frame-008503.png.enc.b64.000",
+      "frame-008503.png.enc.b64.001",
+      "frame-008503.png.enc.b64.002",
+      "frame-008503.png.enc.b64.003",
+      "frame-008503.png.enc.b64.004",
+      "frame-008503.png.enc.b64.005",
+      "frame-008503.png.enc.b64.006"
+    ],
+    "sha256": "11a733bfc290bb6830f31f08d333223530dfcba8e633e0a9da738ff7580d45a4"
+  }
+]
