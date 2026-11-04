@@ -5,7 +5,7 @@ import numpy as np
 
 # Calibrated against the three original 1920x1080 pilot frames, not other rooms.
 REGIONS = {'left': (.025, .19, .33, .74),
-           'center': (.355, .34, .655, .75),
+           'center': (.355, .19, .655, .75),
            'right': (.685, .20, .98, .75)}
 
 
