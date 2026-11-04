@@ -9,6 +9,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -25,10 +26,23 @@ def shift_segments(segments, offset_ms):
 
 def media_command(args, timeout=180):
     # ffmpeg errors can contain signed URLs and cookies: do not publish stderr.
-    result = subprocess.run(args, capture_output=True, timeout=timeout)
-    if result.returncode:
-        raise RuntimeError('Media extraction failed (details withheld from public logs)')
-    return result.stdout
+    if args[0] == 'ffmpeg':
+        args = [args[0], '-y', *args[1:]]
+    for attempt in range(3):
+        result = subprocess.run(args, capture_output=True, timeout=timeout)
+        if not result.returncode:
+            return result.stdout
+        error = result.stderr.decode(errors='replace').lower()
+        categories = [label for label in (
+            '403 forbidden', '404 not found', '502 bad gateway', '503 service unavailable',
+            '504 gateway', 'connection timed out', 'connection reset', 'end of file',
+            'invalid data', 'moov atom not found', 'input/output error', 'permission denied'
+        ) if label in error]
+        print('Media failure:', args[0], 'attempt', attempt + 1,
+              'exit', result.returncode, 'categories', categories, flush=True)
+        if attempt < 2:
+            time.sleep(5)
+    raise RuntimeError('Media extraction failed (details withheld from public logs)')
 
 
 def image_request(client, model, image_bytes, prompt):
