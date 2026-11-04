@@ -34,6 +34,8 @@ def features(frame, region):
 
 
 def distance(current, previous):
+    if (current['mask'] & ~previous['mask']).mean() > .20:
+        return 1.0
     valid = current['mask'] & previous['mask']
     if valid.mean() < .25:
         # A projection screen can initially hide the whole board. Allow a new

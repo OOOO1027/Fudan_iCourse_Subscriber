@@ -8,7 +8,7 @@ permissions:
   contents: write
 concurrency:
   group: adaptive-board-pilot
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   pilot:
     runs-on: ubuntu-latest

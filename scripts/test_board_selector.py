@@ -64,5 +64,13 @@ class SelectorTest(unittest.TestCase):
         self.assertGreaterEqual(sum(why in ('persistent_visual_change',
             'possible_erasure_or_board_move') for _,why in self.saved),2)
 
+    def test_partial_screen_retraction_is_detected(self):
+        screen = self.blank.copy()
+        screen[:90] = 230
+        for t,f in [(0,screen),(10,self.blank),(15,self.blank)]:
+            self.selector.add(f,t)
+        self.assertTrue(any(why in ('persistent_visual_change',
+            'possible_erasure_or_board_move') for _,why in self.saved))
+
 
 if __name__ == '__main__': unittest.main()
