@@ -107,7 +107,7 @@ def main():
                     'region':region,'reason':reason,'quality':quality})
                 if stamp in selected:
                     return
-                if len(selected) >= 400:
+                if len(selected) >= 800:
                     raise RuntimeError('Selection cap reached; thresholds need review')
                 name = f'frame-{stamp:08d}.png'
                 path = scratch/name

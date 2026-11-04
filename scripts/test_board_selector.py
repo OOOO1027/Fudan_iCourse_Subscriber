@@ -43,5 +43,18 @@ class SelectorTest(unittest.TestCase):
             self.selector.add(f,t)
         self.assertEqual(self.saved, [(0,'initial')])
 
+    def test_uniform_exposure_change_not_committed(self):
+        brighter = (self.written.astype(np.int16)+12).clip(0,255).astype(np.uint8)
+        for t,f in [(0,self.written),(10,brighter),(15,brighter)]:
+            self.selector.add(f,t)
+        self.assertEqual(self.saved, [(0,'initial')])
+
+    def test_small_foreground_object_is_excluded(self):
+        blocked = self.written.copy()
+        blocked[90:160,80:120] = (180,90,70)
+        for t,f in [(0,self.written),(10,blocked),(15,blocked)]:
+            self.selector.add(f,t)
+        self.assertEqual(self.saved, [(0,'initial')])
+
 
 if __name__ == '__main__': unittest.main()

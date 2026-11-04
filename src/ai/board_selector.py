@@ -21,13 +21,25 @@ def features(frame, region):
     hsv = np.asarray(small.convert('HSV'))
     green = ((hsv[:, :, 0] >= 42) & (hsv[:, :, 0] <= 142)
              & (hsv[:, :, 1] > 15) & (hsv[:, :, 2] < 210))
+    # Close small chalk gaps, but exclude large non-board foreground objects.
+    mask = np.asarray(Image.fromarray(green.astype(np.uint8)*255)
+        .filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.MinFilter(9))) > 127
     blurred = np.asarray(gray.filter(ImageFilter.GaussianBlur(.8)))
     edges = np.asarray(gray.filter(ImageFilter.FIND_EDGES))[2:-2,2:-2]
     visible = float(green.mean())
     sharpness = float(edges.var())
-    return {'gray': blurred.astype(np.float32) / 255,
+    return {'gray': blurred.astype(np.float32) / 255, 'mask': mask,
             'ink': float((edges > 24).mean()), 'visible': visible,
             'quality': visible + min(sharpness / 1000, .2)}
+
+
+def distance(current, previous):
+    valid = current['mask'] & previous['mask']
+    if valid.mean() < .25:
+        return 0.0
+    delta = (current['gray'] - previous['gray'])[valid]
+    # Remove uniform exposure shifts before judging a persistent board change.
+    return float(np.abs(delta - np.median(delta)).mean())
 
 
 @dataclass
@@ -39,7 +51,7 @@ class Candidate:
 
 class BoardSelector:
     def __init__(self, save, regions=None, change=.012, stable=.025,
-                 heartbeat=120, cooldown=20):
+                 heartbeat=120, cooldown=30):
         self.save = save
         self.regions = regions or REGIONS
         self.change, self.stable = change, stable
@@ -49,7 +61,7 @@ class BoardSelector:
 
     def emit(self, name, candidate, reason, detected_at):
         self.save(candidate.frame, candidate.time, name, reason, detected_at,
-                  {k: v for k, v in candidate.feature.items() if k != 'gray'})
+                  {k: v for k, v in candidate.feature.items() if k not in ('gray', 'mask')})
 
     def add(self, frame, timestamp):
         self.sample_count += 1
@@ -63,8 +75,8 @@ class BoardSelector:
                 self.emit(name, current, 'initial', timestamp)
                 continue
             state = self.states[name]
-            delta = float(np.abs(f['gray'] - state['base']['gray']).mean())
-            motion = float(np.abs(f['gray'] - state['previous']['gray']).mean())
+            delta = distance(f, state['base'])
+            motion = distance(f, state['previous'])
             # Visible green area is only an occlusion proxy. Never label it a person detector.
             usable = f['visible'] >= max(.15, state['base']['visible'] - .12)
             changed = delta > self.change and usable
