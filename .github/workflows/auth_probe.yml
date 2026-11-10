@@ -3,30 +3,26 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: icourse-auth-probe
-  cancel-in-progress: false
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests pycryptodome python-dotenv
-      - name: Inspect public email verification rules
+      - run: pip install requests
+      - name: Inspect official public email API contract
         run: |
           python - <<'PY'
-          import re
-          import requests
-          url = 'https://id.fudan.edu.cn/ac/js/chunk-71ba4ca7.61b64444.js'
-          response = requests.get(url, timeout=(15, 60))
-          response.raise_for_status()
-          source = response.text
-          for match in re.finditer(r'(getMailCode|sendMail|getEmail|mailCode|getSmsCode|sendCode):function', source):
-              print(source[match.start():match.start()+4500])
-          for match in re.finditer(r'.{0,100}(?:/authn/[^" ]*[Mm]ail|mailCode|sendMail).{0,300}', source):
-              print(match.group())
+          import re, requests
+          from urllib.parse import urljoin
+          base = 'https://id.fudan.edu.cn/ac/'
+          html = requests.get(base, timeout=60).text
+          urls = [urljoin(base, p) for p in re.findall(r'<script[^>]+src=["\']([^"\']+)', html)]
+          urls.append(base + 'js/chunk-71ba4ca7.61b64444.js')
+          for url in dict.fromkeys(urls):
+              source = requests.get(url, timeout=60).text
+              for match in re.finditer('sendMailMsg', source):
+                  print('PUBLIC_SOURCE', url, source[max(0, match.start()-1500):match.end()+1800])
           PY
