@@ -1,7 +1,8 @@
 import ast
+import os
 from pathlib import Path
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -16,6 +17,12 @@ def response(url, status=200):
 
 
 class WebVPNSessionTests(unittest.TestCase):
+    def setUp(self):
+        # Production cache configuration must not affect mocked login tests.
+        environment = patch.dict(os.environ, {'ICOURSE_SESSION_FILE': ''})
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def login_function(self, factory, clock):
         # Isolate the real orchestration function from ASR/model dependencies.
         tree = ast.parse((Path(__file__).resolve().parents[1] / 'main.py').read_text())
