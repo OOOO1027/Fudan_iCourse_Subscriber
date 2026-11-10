@@ -1,11 +1,6 @@
 name: iCourse Auth Probe
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - scripts/probe_icourse_auth.py
-      - .github/workflows/auth_probe.yml
 permissions:
   contents: read
 concurrency:

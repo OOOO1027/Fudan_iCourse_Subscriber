@@ -1,9 +1,11 @@
+import ast
+from pathlib import Path
 import unittest
 from unittest.mock import Mock
 
 import requests
 
-from src.api.webvpn import WebVPNSession
+from src.api.webvpn import WebVPNSession, AuthenticationActionRequired, require_login_token
 
 
 def response(url, status=200):
@@ -14,6 +16,72 @@ def response(url, status=200):
 
 
 class WebVPNSessionTests(unittest.TestCase):
+    def login_function(self, factory, clock):
+        # Isolate the real orchestration function from ASR/model dependencies.
+        tree = ast.parse((Path(__file__).resolve().parents[1] / 'main.py').read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                        and n.name == 'login_with_retry')
+        namespace = {'WebVPNSession': factory, 'time': clock,
+                     'AuthenticationActionRequired': AuthenticationActionRequired}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'main.py', 'exec'), namespace)
+        return namespace['login_with_retry']
+
+    def test_interactive_challenge_is_not_retried(self):
+        vpn, clock = Mock(), Mock()
+        vpn.authenticate_icourse.side_effect = AuthenticationActionRequired('verification needed')
+        factory = Mock(return_value=vpn)
+        with self.assertRaises(AuthenticationActionRequired):
+            self.login_function(factory, clock)()
+        self.assertEqual(factory.call_count, 1)
+        clock.sleep.assert_not_called()
+        vpn.session.close.assert_called_once()
+
+    def test_timeout_still_retries_and_closes_failed_session(self):
+        first, second, clock = Mock(), Mock(), Mock()
+        first.login.side_effect = requests.exceptions.ReadTimeout()
+        factory = Mock(side_effect=[first, second])
+        self.assertIs(self.login_function(factory, clock)(max_attempts=2), second)
+        first.session.close.assert_called_once()
+        second.authenticate_icourse.assert_called_once()
+        clock.sleep.assert_called_once_with(30)
+
+    def test_second_step_is_not_success_even_with_code_200(self):
+        with self.assertRaisesRegex(AuthenticationActionRequired, "additional verification"):
+            require_login_token({'code': 200, 'second': True, 'loginToken': None,
+                                 'moduleCodes': ['testModule']}, 'iCourse CAS')
+
+    def test_second_step_cannot_be_overridden_by_token(self):
+        with self.assertRaises(AuthenticationActionRequired):
+            require_login_token({'code': 200, 'second': True, 'loginToken': 'fake'}, 'CAS')
+
+    def test_auth_errors_do_not_include_personal_fields(self):
+        payload = {'code': 200, 'second': True, 'userName': 'private-user',
+                   'mobile': 'private-phone', 'message': 'private-message',
+                   'moduleCodes': ['sms', 'https://example.test/?token=private']}
+        with self.assertRaises(AuthenticationActionRequired) as caught:
+            require_login_token(payload, 'CAS')
+        self.assertNotIn('private', str(caught.exception))
+        self.assertIn('sms', str(caught.exception))
+
+    def test_valid_login_token(self):
+        self.assertEqual(require_login_token({'code': 200, 'loginToken': 'test'}, 'CAS'), 'test')
+
+    def test_missing_token_is_not_success(self):
+        with self.assertRaises(RuntimeError):
+            require_login_token({'code': 200}, 'CAS')
+
+    def test_icourse_verification_fails_closed(self):
+        for body in ('<html>login</html>', '{"code":401}', '[]', '{"code":false}'):
+            result = response('https://webvpn.fudan.edu.cn/api')
+            result._content = body.encode()
+            with self.assertRaises(RuntimeError):
+                WebVPNSession._validate_icourse_response(result)
+
+    def test_icourse_verification_accepts_api_success(self):
+        result = response('https://webvpn.fudan.edu.cn/api')
+        result._content = b'{"code":0,"data":{"id":123}}'
+        WebVPNSession._validate_icourse_response(result)
+
     def test_auth_starts_at_gateway_and_keeps_redirect_context(self):
         vpn = WebVPNSession()
         first = response("https://webvpn.fudan.edu.cn/login", 302)

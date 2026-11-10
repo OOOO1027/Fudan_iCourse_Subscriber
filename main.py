@@ -32,7 +32,7 @@ from src.runtime.reporter import Reporter
 from src.runtime.scheduler import Scheduler
 from src.ai.summarizer import Summarizer
 from src.ai.transcriber import Transcriber
-from src.api.webvpn import WebVPNSession
+from src.api.webvpn import WebVPNSession, AuthenticationActionRequired
 
 
 def login_with_retry(max_attempts: int = 5) -> WebVPNSession:
@@ -53,6 +53,11 @@ def login_with_retry(max_attempts: int = 5) -> WebVPNSession:
             print("[Login] iCourse CAS...")
             vpn.authenticate_icourse()
             return vpn
+        except AuthenticationActionRequired:
+            vpn.session.close()
+            print("[Login] Official additional verification is required; stopping "
+                  "automatic password retries. Course processing has not started.")
+            raise
         except Exception as e:
             vpn.session.close()
             if attempt < max_attempts - 1:

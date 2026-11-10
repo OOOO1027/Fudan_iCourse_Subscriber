@@ -20,6 +20,35 @@ import base64
 from src.runtime import config
 
 
+class AuthenticationActionRequired(RuntimeError):
+    """The identity provider requires an interactive authentication step."""
+
+
+def require_login_token(data, context):
+    """A successful password step is not necessarily a completed login."""
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{context}: invalid authentication response")
+    if data.get("second") is True:
+        modules = data.get("moduleCodes") or []
+        if not isinstance(modules, list):
+            modules = []
+        safe_modules = [m for m in modules if isinstance(m, str)
+                        and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,60}", m)]
+        names = ", ".join(safe_modules) or "unspecified"
+        raise AuthenticationActionRequired(
+            f"{context}: additional verification required by the identity provider "
+            f"(second=true; modules={names}). Password authentication alone is "
+            "not sufficient; complete the official verification flow."
+        )
+    if str(data.get("code")) != "200":
+        # Do not print arbitrary server messages, which can contain account data.
+        raise RuntimeError(f"{context}: authentication rejected")
+    token = data.get("loginToken")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError(f"{context}: authentication did not issue a loginToken")
+    return token
+
+
 def encrypt_host(hostname: str) -> str:
     """Encrypt hostname using AES-128-CFB for WebVPN URL encoding.
 
@@ -242,10 +271,9 @@ class WebVPNSession:
         if not lck:
             # Log the redirect trail so future failures are diagnosable
             # without re-running with extra prints.
-            trail = " -> ".join(last_locations[-3:]) if last_locations else "<no redirects>"
             raise RuntimeError(
                 f"Failed to extract lck from CAS redirect chain "
-                f"(status={resp.status_code}, last hops: {trail})"
+                f"(status={resp.status_code}, redirects={len(last_locations)})"
             )
 
         entity_id = config.ICOURSE_BASE
@@ -322,14 +350,7 @@ class WebVPNSession:
         )
         data = resp.json()
 
-        if str(data.get("code")) != "200":
-            raise RuntimeError(
-                f"iCourse CAS auth failed (code={data.get('code')})"
-            )
-
-        login_token = data.get("loginToken", "")
-        if not login_token:
-            raise RuntimeError("No loginToken in iCourse CAS response")
+        login_token = require_login_token(data, "iCourse CAS")
         print("    loginToken: OK")
 
         # Step 6: Get CAS ticket (through WebVPN)
@@ -378,18 +399,21 @@ class WebVPNSession:
             f"{config.ICOURSE_BASE}/userapi/v1/infosimple"
         )
         resp = self.session.get(test_url, timeout=60)
-        if resp.status_code == 200:
-            try:
-                user_data = resp.json()
-                if user_data.get("code") in (0, 200):
-                    print("    Verified: login OK")
-                    print("[*] iCourse authentication successful!")
-                    return True
-            except Exception:
-                pass
-
-        print("    Could not verify iCourse auth via API, proceeding...")
+        self._validate_icourse_response(resp)
+        print("    Verified: login OK")
+        print("[*] iCourse authentication successful!")
         return True
+
+    @staticmethod
+    def _validate_icourse_response(resp):
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise RuntimeError("iCourse verification returned a non-JSON response") from None
+        if (resp.status_code != 200 or not isinstance(data, dict)
+                or type(data.get("code")) is not int or data["code"] not in (0, 200)):
+            raise RuntimeError("iCourse authenticated API verification failed")
 
     def get(self, url: str, **kwargs) -> requests.Response:
         """GET request through WebVPN. Converts URL automatically."""
@@ -555,15 +579,7 @@ class WebVPNSession:
         )
         data = resp.json()
 
-        if str(data.get("code")) != "200":
-            raise RuntimeError(
-                f"Authentication failed (code={data.get('code')})"
-            )
-
-        # loginToken is at top level, not nested under "data"
-        login_token = data.get("loginToken", "")
-        if not login_token:
-            raise RuntimeError("No loginToken in response")
+        login_token = require_login_token(data, "WebVPN CAS")
 
         print("    loginToken: OK")
         return login_token

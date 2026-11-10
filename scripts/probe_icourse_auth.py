@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.api.webvpn import WebVPNSession
+from src.api.webvpn import WebVPNSession, AuthenticationActionRequired
 from src.api.icourse import ICourseClient
 from src.runtime import config
 
@@ -91,6 +91,9 @@ def probe(warm_page=False):
             print('[Probe] course', course_id, 'lectures', len(lectures),
                   'playbacks', sum(bool(x.get('has_playback')) for x in lectures), flush=True)
         return True
+    except AuthenticationActionRequired:
+        print('[Probe] Official second-factor verification required; no further password retries.', flush=True)
+        raise
     except Exception as exc:
         # Existing auth errors can contain redirect URLs; report only the class.
         print('[Probe] failed:', type(exc).__name__, flush=True)
