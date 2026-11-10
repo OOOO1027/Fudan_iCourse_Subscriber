@@ -56,10 +56,10 @@ jobs:
     permissions:
       contents: read
       actions: write
-    env:
-      ICOURSE_SESSION_FILE: ${{ runner.temp }}/icourse-auth/session.enc
     steps:
       - uses: actions/checkout@v4
+      - name: Configure encrypted cache path
+        run: echo "ICOURSE_SESSION_FILE=$RUNNER_TEMP/icourse-auth/session.enc" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
