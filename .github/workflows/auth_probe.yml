@@ -16,9 +16,19 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install requests pycryptodome python-dotenv
-      - name: Probe authentication and course reads
-        env:
-          StuId: ${{ secrets.STUID }}
-          UISPsw: ${{ secrets.UISPSW }}
-          COURSE_IDS: ${{ secrets.COURSE_IDS }}
-        run: python -u scripts/probe_icourse_auth.py
+      - name: Inspect public QR waiting rules
+        run: |
+          python - <<'PY'
+          import re
+          import requests
+          url = 'https://id.fudan.edu.cn/ac/js/chunk-71ba4ca7.61b64444.js'
+          response = requests.get(url, timeout=(15, 60))
+          response.raise_for_status()
+          source = response.text
+          for match in re.finditer('4005', source):
+              print(source[max(0, match.start()-300):match.end()+500])
+          for match in re.finditer('getSubmitUrl:function', source):
+              block = source[match.start():match.start()+5000]
+              if 'authTxt' in block:
+                  print(block)
+          PY
