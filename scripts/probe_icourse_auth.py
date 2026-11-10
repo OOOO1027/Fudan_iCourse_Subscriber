@@ -27,9 +27,15 @@ def shape(value, depth=0):
 def describe(data):
     result = {'shape': shape(data)}
     if isinstance(data, dict):
-        for key in ('code', 'status', 'errorCode'):
+        for key in ('code', 'status', 'errorCode', 'pageLevelNo'):
             if re.fullmatch(r'-?\d{1,6}', str(data.get(key, ''))):
                 result[key] = data[key]
+        result['moduleCodes'] = [v for v in data.get('moduleCodes', [])
+                                 if isinstance(v, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,60}', v)]
+        if isinstance(data.get('data'), list):
+            result['available_modules'] = [v.get('moduleCode') for v in data['data']
+                if isinstance(v, dict) and isinstance(v.get('moduleCode'), str)
+                and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,60}', v['moduleCode'])]
         messages = ' '.join(str(data.get(k, '')) for k in ('msg', 'message', 'errorMsg')).lower()
         result['signals'] = [name for name, words in {
             'captcha': ('验证码', 'captcha', 'verifycode'),
