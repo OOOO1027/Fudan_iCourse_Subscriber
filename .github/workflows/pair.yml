@@ -1,10 +1,11 @@
-name: iCourse QR Recovery
+name: iCourse Email Recovery
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: scheduled-course-check
@@ -50,6 +51,7 @@ jobs:
       - name: Start interactive recovery
         timeout-minutes: 350
         env:
+          GH_TOKEN: ${{ github.token }}
           StuId: ${{ secrets.STUID }}
           UISPsw: ${{ secrets.UISPSW }}
           COURSE_IDS: ${{ secrets.COURSE_IDS }}
@@ -70,12 +72,12 @@ jobs:
           ) > "$ICOURSE_PAIR_DIR/run.log" 2>&1 < /dev/null &
           echo "$!" > "$ICOURSE_PAIR_DIR/pid"
 
-      - name: Wait for encrypted QR challenge
-        id: qr
+      - name: Wait for public email challenge
+        id: email
         run: |
           ROOT="$RUNNER_TEMP/icourse-pair"
           for i in $(seq 1 240); do
-            if [ -f "$ROOT/qr.enc" ]; then
+            if [ -f "$ROOT/email-challenge.json" ]; then
               echo "ready=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -85,19 +87,19 @@ jobs:
             fi
             sleep 2
           done
-          echo "::error::No QR challenge was produced within the bounded wait."
+          echo "::error::No email challenge was produced within the bounded wait."
           exit 1
 
-      - name: Deliver encrypted QR challenge
-        if: steps.qr.outputs.ready == 'true'
+      - name: Deliver public email connection information
+        if: steps.email.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: official-qr
-          path: ${{ runner.temp }}/icourse-pair/qr.enc
+          name: email-connection
+          path: ${{ runner.temp }}/icourse-pair/email-challenge.json
           retention-days: 1
 
-      - name: Wait for official scan confirmation
-        timeout-minutes: 12
+      - name: Wait for official email confirmation
+        timeout-minutes: 28
         run: |
           ROOT="$RUNNER_TEMP/icourse-pair"
           while [ ! -f "$RUNNER_TEMP/icourse-auth/session.verified" ]; do
@@ -107,7 +109,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "Official scan completed and course API authenticated."
+          echo "Official email verification completed and course API authenticated."
 
       - name: Check verified session for caching
         if: always()

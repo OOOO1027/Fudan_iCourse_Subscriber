@@ -3,26 +3,22 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: icourse-auth-probe
+  cancel-in-progress: false
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests
-      - name: Inspect official public email API contract
-        run: |
-          python - <<'PY'
-          import re, requests
-          from urllib.parse import urljoin
-          base = 'https://id.fudan.edu.cn/ac/'
-          html = requests.get(base, timeout=60).text
-          urls = [urljoin(base, p) for p in re.findall(r'<script[^>]+src=["\']([^"\']+)', html)]
-          urls.append(base + 'js/chunk-71ba4ca7.61b64444.js')
-          for url in dict.fromkeys(urls):
-              source = requests.get(url, timeout=60).text
-              for match in re.finditer('sendMailMsg', source):
-                  print('PUBLIC_SOURCE', url, source[max(0, match.start()-1500):match.end()+1800])
-          PY
+      - run: pip install requests pycryptodome python-dotenv
+      - name: Probe authentication and course reads
+        env:
+          StuId: ${{ secrets.STUID }}
+          UISPsw: ${{ secrets.UISPSW }}
+          COURSE_IDS: ${{ secrets.COURSE_IDS }}
+        run: python -u scripts/probe_icourse_auth.py

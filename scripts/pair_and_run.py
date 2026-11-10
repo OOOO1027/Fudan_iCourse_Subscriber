@@ -1,29 +1,31 @@
 """Keep the verified session in memory and process subscribed courses once."""
 import os
+import json
 from pathlib import Path
 import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.api.webvpn import WebVPNSession, AuthenticationActionRequired
-from src.api.qr_verification import QRVerification, seal
+from src.api.email_verification import EmailVerification
 from src.api.session_cache import save_session
 from src.runtime import config
 
 
-def publish(image):
+def publish(challenge):
     root = Path(os.environ['ICOURSE_PAIR_DIR'])
-    encrypted = seal(image, config.STUDENT_ID, config.PASSWORD, 'qr-image')
-    temporary = root / 'qr.pending'
-    temporary.write_bytes(encrypted)
-    temporary.replace(root / 'qr.enc')
-    print('[QR] Encrypted challenge ready for the account owner.', flush=True)
+    if (root / 'email-challenge.json').exists():
+        raise AuthenticationActionRequired('A second email challenge is required; start a new recovery')
+    temporary = root / 'email-challenge.pending'
+    temporary.write_text(json.dumps(challenge))
+    temporary.replace(root / 'email-challenge.json')
+    print('[Email] Public connection information ready; no private key or school session exported.', flush=True)
 
 
 def main():
     vpn = None
     for attempt in range(3):
-        vpn = WebVPNSession(verification_handler=QRVerification(publish))
+        vpn = WebVPNSession(verification_handler=EmailVerification(publish))
         try:
             vpn.login()
             vpn.authenticate_icourse()

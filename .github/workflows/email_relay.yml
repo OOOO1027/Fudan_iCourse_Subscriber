@@ -1,0 +1,47 @@
+name: iCourse Encrypted Email Relay
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Recovery target from the local verification page
+        required: true
+        type: string
+      ciphertext:
+        description: Encrypted message only - never enter an email code here
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Validate encrypted envelope
+        env:
+          TARGET: ${{ inputs.target }}
+          CIPHERTEXT: ${{ inputs.ciphertext }}
+        run: |
+          python3 - <<'PY'
+          import base64, os, pathlib, re
+          target = os.environ['TARGET']
+          encoded = os.environ['CIPHERTEXT']
+          if not re.fullmatch(r'[0-9]+-[0-9]+-[a-f0-9]{24}', target):
+              raise SystemExit('Invalid target')
+          try:
+              valid = len(encoded) <= 512 and len(base64.b64decode(encoded, validate=True)) == 256
+          except ValueError:
+              valid = False
+          if not valid:
+              raise SystemExit('Only RSA-encrypted messages are accepted')
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'response.enc').write_text(encoded)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: email-response-${{ inputs.target }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/response.enc
+          retention-days: 1
