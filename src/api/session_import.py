@@ -82,6 +82,8 @@ def verify_and_save(cookies):
             try:
                 reply = vpn.session.get(get_vpn_url(config.ICOURSE_BASE + '/userapi/v1/infosimple'),
                                         timeout=(15, 45), allow_redirects=False)
+                status = reply.status_code if type(reply.status_code) is int else 0
+                print('[SessionImport] Cloud API HTTP status: ' + str(status), flush=True)
                 vpn._validate_icourse_response(reply)
                 break
             except (requests.Timeout, requests.ConnectionError):
