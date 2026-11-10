@@ -1,0 +1,112 @@
+name: iCourse Browser Session Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [receive, deliver]
+        default: receive
+        required: true
+      target:
+        description: One-use receiving task identifier (deliver only)
+        default: ''
+      ciphertext:
+        description: Encrypted envelope only (deliver only)
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  deliver:
+    if: github.actor == github.repository_owner && github.ref == 'refs/heads/main' && inputs.mode == 'deliver'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Validate encrypted envelope
+        env:
+          TARGET: ${{ inputs.target }}
+          CIPHERTEXT: ${{ inputs.ciphertext }}
+        run: |
+          python - <<'PY'
+          import base64, json, os, pathlib, re
+          assert re.fullmatch(r'[0-9]+-[0-9]+-[a-f0-9]{24}', os.environ['TARGET'])
+          raw = os.environ['CIPHERTEXT']
+          assert len(raw) <= 60000
+          obj = json.loads(raw)
+          assert set(obj) == {'key', 'nonce', 'tag', 'ciphertext'}
+          parts = {k: base64.b64decode(v, validate=True) for k, v in obj.items()}
+          assert len(parts['key']) == 256 and len(parts['nonce']) == 12 and len(parts['tag']) == 16
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'response.enc').write_text(raw)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: session-response-${{ inputs.target }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/response.enc
+          retention-days: 1
+
+  receive:
+    if: github.actor == github.repository_owner && github.ref == 'refs/heads/main' && inputs.mode == 'receive'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: scheduled-course-check
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    env:
+      ICOURSE_SESSION_FILE: ${{ runner.temp }}/icourse-auth/session.enc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pycryptodome
+      - name: Test encrypted import
+        run: python -m unittest discover -s tests -p 'test_session_import.py' -v
+      - name: Start one-use receiver
+        env:
+          StuId: ${{ secrets.STUID }}
+          UISPsw: ${{ secrets.UISPSW }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/icourse-import"
+          (set +e; python -u scripts/import_browser_session.py > "$RUNNER_TEMP/icourse-import/run.log" 2>&1; echo $? > "$RUNNER_TEMP/icourse-import/exit") &
+          echo $! > "$RUNNER_TEMP/icourse-import/pid"
+          for i in $(seq 1 60); do
+            test ! -f "$RUNNER_TEMP/icourse-import/exit" || { cat "$RUNNER_TEMP/icourse-import/run.log"; exit 1; }
+            test ! -f "$RUNNER_TEMP/icourse-import/connection.json" || exit 0
+            sleep 1
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: session-connection
+          path: ${{ runner.temp }}/icourse-import/connection.json
+          retention-days: 1
+      - name: Wait for encrypted import and cloud verification
+        run: |
+          for i in $(seq 1 260); do
+            if [ -f "$RUNNER_TEMP/icourse-import/exit" ]; then
+              cat "$RUNNER_TEMP/icourse-import/run.log"
+              exit "$(cat "$RUNNER_TEMP/icourse-import/exit")"
+            fi
+            sleep 5
+          done
+          exit 1
+      - uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/icourse-auth/session.enc
+          key: icourse-session-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Start normal incremental course check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run check.yml --ref main
+      - name: Stop receiver
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/icourse-import/pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/icourse-import/pid")" 2>/dev/null || true
+          fi

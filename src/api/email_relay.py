@@ -31,6 +31,11 @@ def encrypt_for_viewer(public_key, payload, target):
 
 
 class EmailRelay:
+    workflow_path = '.github/workflows/email_relay.yml'
+    artifact_prefix = 'email-response-'
+    message_limit = 512
+    archive_limit = 16384
+
     def __init__(self, publish):
         self.key = RSA.generate(2048)
         self.target = '{}-{}-{}'.format(os.environ['GITHUB_RUN_ID'],
@@ -70,7 +75,7 @@ class EmailRelay:
         return reply.json()
 
     def _trusted(self, run):
-        return (run.get('path') == '.github/workflows/email_relay.yml'
+        return (run.get('path') == self.workflow_path
                 and run.get('event') == 'workflow_dispatch'
                 and run.get('head_branch') == 'main'
                 and (run.get('actor') or {}).get('login', '').lower() == self.owner)
@@ -83,9 +88,9 @@ class EmailRelay:
                 artifacts = self._json('/actions/artifacts?per_page=100').get('artifacts', [])
                 for artifact in artifacts:
                     identifier = artifact['id']
-                    if identifier in self.seen or not artifact['name'].startswith('email-response-' + self.target + '-'):
+                    if identifier in self.seen or not artifact['name'].startswith(self.artifact_prefix + self.target + '-'):
                         continue
-                    if artifact.get('expired') or artifact.get('size_in_bytes', 0) > 16384:
+                    if artifact.get('expired') or artifact.get('size_in_bytes', 0) > self.archive_limit:
                         self.seen.add(identifier)
                         continue
                     run_id = artifact.get('workflow_run', {}).get('id')
@@ -95,12 +100,12 @@ class EmailRelay:
                     response = self.http.get(self.api + '/actions/artifacts/' + str(identifier) + '/zip',
                                              timeout=(10, 25))
                     response.raise_for_status()
-                    if len(response.content) > 16384:
+                    if len(response.content) > self.archive_limit:
                         self.seen.add(identifier)
                         continue
                     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
                         entries = archive.infolist()
-                        if len(entries) != 1 or entries[0].filename != 'response.enc' or entries[0].file_size > 512:
+                        if len(entries) != 1 or entries[0].filename != 'response.enc' or entries[0].file_size > self.message_limit:
                             self.seen.add(identifier)
                             continue
                         message = self.decode(archive.read(entries[0]).decode('ascii').strip())
