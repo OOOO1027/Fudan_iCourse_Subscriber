@@ -9,11 +9,25 @@ import time
 import zipfile
 
 import requests
-from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.Hash import SHA256
 from Crypto.PublicKey import RSA
+from Crypto.Random import get_random_bytes
 
 from src.api.webvpn import AuthenticationActionRequired
+
+
+def encrypt_for_viewer(public_key, payload, target):
+    key = RSA.import_key(base64.b64decode(public_key, validate=True))
+    if key.has_private() or key.size_in_bits() < 2048:
+        raise ValueError('A viewer public key is required')
+    secret = get_random_bytes(32)
+    cipher = AES.new(secret, AES.MODE_GCM, nonce=get_random_bytes(12))
+    cipher.update(target.encode())
+    encrypted, tag = cipher.encrypt_and_digest(json.dumps(payload).encode())
+    wrapped = PKCS1_OAEP.new(key, hashAlgo=SHA256, label=target.encode()).encrypt(secret)
+    return {k: base64.b64encode(v).decode() for k, v in
+            {'key': wrapped, 'nonce': cipher.nonce, 'tag': tag, 'ciphertext': encrypted}.items()}
 
 
 class EmailRelay:

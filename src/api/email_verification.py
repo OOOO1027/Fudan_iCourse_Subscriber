@@ -1,5 +1,6 @@
 """Complete the school's official email second factor in the existing session."""
-from src.api.email_relay import EmailRelay
+import os
+from src.api.email_relay import EmailRelay, encrypt_for_viewer
 from src.api.webvpn import AuthenticationActionRequired, require_login_token
 
 
@@ -24,13 +25,30 @@ class EmailVerification:
     def __call__(self, session, url, headers, previous, challenge):
         if 'userAndMail' not in (challenge.get('moduleCodes') or []):
             raise AuthenticationActionRequired('Email verification is not offered by the school')
-        relay = self.relay_factory(self.publish)
+        # Display the official puzzle, but keep its token in this session only.
+        puzzle_reply = session.get(url.rsplit('/authn/', 1)[0] + '/captcha/getBlockPuzzle',
+                                   headers=headers, timeout=(15, 60))
+        puzzle = response_data(puzzle_reply, 'Official email puzzle').get('data', {})
+        if not isinstance(puzzle, dict) or not all(isinstance(puzzle.get(k), str) and puzzle[k]
+                                                 for k in ('originalImageBase64', 'jigsawImageBase64', 'token')):
+            raise AuthenticationActionRequired('Official email puzzle has an unsupported format')
+        images = {k: puzzle[k] for k in ('originalImageBase64', 'jigsawImageBase64')}
+        if any(len(value) > 1_000_000 for value in images.values()):
+            raise AuthenticationActionRequired('Official email puzzle exceeded the image limit')
+        def publish_encrypted(info):
+            encrypted = encrypt_for_viewer(os.environ['ICOURSE_VIEWER_PUBLIC_KEY'], images, info['target'])
+            self.publish(dict(info, puzzle_encrypted=encrypted))
+        relay = self.relay_factory(publish_encrypted)
         try:
             print('[Email] Public encryption challenge ready; waiting for owner to request email.', flush=True)
-            relay.receive('send', timeout=900)
+            request = relay.receive('send', timeout=900)
+            point_x = request.get('point_x')
+            if type(point_x) is not int or not 0 <= point_x <= 4096:
+                raise AuthenticationActionRequired('Complete the official puzzle before requesting email')
             reply = session.post(url.rsplit('/', 1)[0] + '/sendMailMsg',
-                                 json={'loginName': challenge['userName'], 'pointJson': None,
-                                       'token': None, 'lck': previous['lck']},
+                                 json={'loginName': challenge['userName'],
+                                       'pointJson': '{"x":' + str(point_x) + ',"y":5}',
+                                       'token': puzzle.pop('token'), 'lck': previous['lck']},
                                  headers=headers, timeout=(15, 60))
             response_data(reply, 'Official email delivery')
             print('[Email] School accepted email delivery; waiting for encrypted code.', flush=True)

@@ -2,6 +2,11 @@ name: iCourse Email Recovery
 
 on:
   workflow_dispatch:
+    inputs:
+      viewer_public_key:
+        description: Base64 DER public key for encrypted puzzle delivery
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -52,6 +57,7 @@ jobs:
         timeout-minutes: 350
         env:
           GH_TOKEN: ${{ github.token }}
+          ICOURSE_VIEWER_PUBLIC_KEY: ${{ inputs.viewer_public_key }}
           StuId: ${{ secrets.STUID }}
           UISPsw: ${{ secrets.UISPSW }}
           COURSE_IDS: ${{ secrets.COURSE_IDS }}
@@ -102,6 +108,9 @@ jobs:
         timeout-minutes: 28
         run: |
           ROOT="$RUNNER_TEMP/icourse-pair"
+          tail -n +1 -f "$ROOT/run.log" &
+          LOG_PID=$!
+          trap 'kill "$LOG_PID" 2>/dev/null || true' EXIT
           while [ ! -f "$RUNNER_TEMP/icourse-auth/session.verified" ]; do
             if [ -f "$ROOT/exit" ]; then
               cat "$ROOT/run.log"
