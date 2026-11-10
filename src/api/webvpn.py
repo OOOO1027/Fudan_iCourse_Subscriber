@@ -144,10 +144,17 @@ def get_ordinary_url(vpn_url: str) -> str:
 class WebVPNSession:
     """Manages a WebVPN session with full IDP authentication."""
 
-    def __init__(self):
+    def __init__(self, verification_handler=None):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": config.USER_AGENT})
         self.logged_in = False
+        self.verification_handler = verification_handler
+
+    def _complete_auth(self, data, payload, url, headers):
+        if (isinstance(data, dict) and data.get("second") is True
+                and self.verification_handler is not None):
+            data = self.verification_handler(self.session, url, headers, payload, data)
+        return require_login_token(data, "CAS")
 
     def login(self, student_id: str = None, password: str = None) -> bool:
         """Execute the full 7-step IDP authentication flow.
@@ -350,7 +357,10 @@ class WebVPNSession:
         )
         data = resp.json()
 
-        login_token = require_login_token(data, "iCourse CAS")
+        login_token = self._complete_auth(data, payload, url, {
+            "Content-Type": "application/json", "Referer": f"{idp_vpn_base}/ac/",
+            "Origin": config.WEBVPN_BASE,
+        })
         print("    loginToken: OK")
 
         # Step 6: Get CAS ticket (through WebVPN)
@@ -579,7 +589,10 @@ class WebVPNSession:
         )
         data = resp.json()
 
-        login_token = require_login_token(data, "WebVPN CAS")
+        login_token = self._complete_auth(data, payload, url, {
+            "Content-Type": "application/json", "Referer": f"{config.IDP_BASE}/ac/",
+            "Origin": config.IDP_BASE,
+        })
 
         print("    loginToken: OK")
         return login_token

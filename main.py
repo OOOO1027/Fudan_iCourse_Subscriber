@@ -45,13 +45,20 @@ def login_with_retry(max_attempts: int = 5) -> WebVPNSession:
     long tail of times when CAS rejects multiple fresh sessions in a
     row before letting one through.
     """
+    from src.api.session_cache import load_verified_session, save_session
     for attempt in range(max_attempts):
         vpn = WebVPNSession()
         try:
+            cached = load_verified_session()
+            if cached is not None:
+                vpn.session.close()
+                save_session(cached)
+                return cached
             print(f"\n[Login] WebVPN (attempt {attempt + 1}/{max_attempts})...")
             vpn.login()
             print("[Login] iCourse CAS...")
             vpn.authenticate_icourse()
+            save_session(vpn)
             return vpn
         except AuthenticationActionRequired:
             vpn.session.close()
