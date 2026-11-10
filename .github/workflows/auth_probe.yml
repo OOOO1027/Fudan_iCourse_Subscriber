@@ -16,9 +16,17 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install requests pycryptodome python-dotenv
-      - name: Probe authentication and course reads
-        env:
-          StuId: ${{ secrets.STUID }}
-          UISPsw: ${{ secrets.UISPSW }}
-          COURSE_IDS: ${{ secrets.COURSE_IDS }}
-        run: python -u scripts/probe_icourse_auth.py
+      - name: Inspect public email verification rules
+        run: |
+          python - <<'PY'
+          import re
+          import requests
+          url = 'https://id.fudan.edu.cn/ac/js/chunk-71ba4ca7.61b64444.js'
+          response = requests.get(url, timeout=(15, 60))
+          response.raise_for_status()
+          source = response.text
+          for match in re.finditer(r'(getMailCode|sendMail|getEmail|mailCode|getSmsCode|sendCode):function', source):
+              print(source[match.start():match.start()+4500])
+          for match in re.finditer(r'.{0,100}(?:/authn/[^" ]*[Mm]ail|mailCode|sendMail).{0,300}', source):
+              print(match.group())
+          PY
