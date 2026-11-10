@@ -38,6 +38,13 @@ def main():
                 raise
             print('[Pair] Transient login failure; retrying with a fresh session.', flush=True)
             time.sleep(20)
+    ready = Path(os.environ['ICOURSE_PAIR_DIR']) / 'ready-to-process'
+    deadline = time.monotonic() + 1800
+    while not ready.exists():
+        if time.monotonic() > deadline:
+            vpn.session.close()
+            raise RuntimeError('Course preparation did not finish within 30 minutes')
+        time.sleep(2)
     import main as application
     original_login = application.login_with_retry
     available = [vpn]

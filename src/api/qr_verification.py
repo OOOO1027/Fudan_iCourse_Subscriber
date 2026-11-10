@@ -66,7 +66,14 @@ class QRVerification:
                 result = response.json()
             except requests.exceptions.ReadTimeout:
                 continue
-            require_login_token(result, 'Official QR verification')
+            try:
+                require_login_token(result, 'Official QR verification')
+            except RuntimeError:
+                code = str(result.get('code', 'unknown')) if isinstance(result, dict) else 'invalid'
+                code = code if code.lstrip('-').isdigit() and len(code) < 8 else 'unknown'
+                raise AuthenticationActionRequired(
+                    f'Official QR verification did not complete (code={code}); a fresh QR challenge is required'
+                ) from None
             print('[QR] Official second-factor verification completed.', flush=True)
             return result
         raise AuthenticationActionRequired('QR verification timed out; a fresh official challenge is required')

@@ -47,6 +47,83 @@ jobs:
       - name: Test WebVPN session validation
         run: python -m unittest discover -s tests -v
 
+      - name: Start interactive recovery
+        timeout-minutes: 350
+        env:
+          StuId: ${{ secrets.STUID }}
+          UISPsw: ${{ secrets.UISPSW }}
+          COURSE_IDS: ${{ secrets.COURSE_IDS }}
+          CRAWL_TERM: ${{ secrets.CRAWL_TERM }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: |
+          export ICOURSE_PAIR_DIR="$RUNNER_TEMP/icourse-pair"
+          mkdir -p "$ICOURSE_PAIR_DIR"
+          (
+            set +e
+            python -u scripts/pair_and_run.py
+            echo "$?" > "$ICOURSE_PAIR_DIR/exit"
+          ) > "$ICOURSE_PAIR_DIR/run.log" 2>&1 < /dev/null &
+          echo "$!" > "$ICOURSE_PAIR_DIR/pid"
+
+      - name: Wait for encrypted QR challenge
+        id: qr
+        run: |
+          ROOT="$RUNNER_TEMP/icourse-pair"
+          for i in $(seq 1 240); do
+            if [ -f "$ROOT/qr.enc" ]; then
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ -f "$ROOT/exit" ]; then
+              cat "$ROOT/run.log"
+              exit "$(cat "$ROOT/exit")"
+            fi
+            sleep 2
+          done
+          echo "::error::No QR challenge was produced within the bounded wait."
+          exit 1
+
+      - name: Deliver encrypted QR challenge
+        if: steps.qr.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-qr
+          path: ${{ runner.temp }}/icourse-pair/qr.enc
+          retention-days: 1
+
+      - name: Wait for official scan confirmation
+        timeout-minutes: 12
+        run: |
+          ROOT="$RUNNER_TEMP/icourse-pair"
+          while [ ! -f "$RUNNER_TEMP/icourse-auth/session.verified" ]; do
+            if [ -f "$ROOT/exit" ]; then
+              cat "$ROOT/run.log"
+              exit "$(cat "$ROOT/exit")"
+            fi
+            sleep 2
+          done
+          echo "Official scan completed and course API authenticated."
+
+      - name: Check verified session for caching
+        if: always()
+        id: auth-cache-ready
+        run: |
+          if [ -f "$RUNNER_TEMP/icourse-auth/session.verified" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save encrypted authentication session
+        if: always() && steps.auth-cache-ready.outputs.ready == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/icourse-auth/session.enc
+          key: icourse-session-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Install ffmpeg
         run: |
           sudo apt-get update
@@ -174,54 +251,8 @@ jobs:
             echo "hash=none" >> $GITHUB_OUTPUT
           fi
 
-      - name: Start interactive recovery
-        timeout-minutes: 350
-        env:
-          StuId: ${{ secrets.STUID }}
-          UISPsw: ${{ secrets.UISPSW }}
-          COURSE_IDS: ${{ secrets.COURSE_IDS }}
-          CRAWL_TERM: ${{ secrets.CRAWL_TERM }}
-          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
-        run: |
-          export ICOURSE_PAIR_DIR="$RUNNER_TEMP/icourse-pair"
-          mkdir -p "$ICOURSE_PAIR_DIR"
-          (
-            set +e
-            python -u scripts/pair_and_run.py
-            echo "$?" > "$ICOURSE_PAIR_DIR/exit"
-          ) > "$ICOURSE_PAIR_DIR/run.log" 2>&1 < /dev/null &
-          echo "$!" > "$ICOURSE_PAIR_DIR/pid"
-
-      - name: Wait for encrypted QR challenge
-        id: qr
-        run: |
-          ROOT="$RUNNER_TEMP/icourse-pair"
-          for i in $(seq 1 240); do
-            if [ -f "$ROOT/qr.enc" ]; then
-              echo "ready=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if [ -f "$ROOT/exit" ]; then
-              cat "$ROOT/run.log"
-              exit "$(cat "$ROOT/exit")"
-            fi
-            sleep 2
-          done
-          echo "::error::No QR challenge was produced within the bounded wait."
-          exit 1
-
-      - name: Deliver encrypted QR challenge
-        if: steps.qr.outputs.ready == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: official-qr
-          path: ${{ runner.temp }}/icourse-pair/qr.enc
-          retention-days: 1
+      - name: Allow authenticated course processing
+        run: touch "$RUNNER_TEMP/icourse-pair/ready-to-process"
 
       - name: Complete recovery and course processing
         timeout-minutes: 330
@@ -238,21 +269,6 @@ jobs:
           if [ -f "$ROOT/pid" ] && [ ! -f "$ROOT/exit" ]; then
             kill -- -"$(cat "$ROOT/pid")" 2>/dev/null || kill "$(cat "$ROOT/pid")" 2>/dev/null || true
           fi
-
-      - name: Check verified session for caching
-        if: always()
-        id: auth-cache-ready
-        run: |
-          if [ -f "$RUNNER_TEMP/icourse-auth/session.verified" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Save encrypted authentication session
-        if: always() && steps.auth-cache-ready.outputs.ready == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/icourse-auth/session.enc
-          key: icourse-session-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Deploy database to data branch
         if: always()
