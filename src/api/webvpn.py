@@ -7,8 +7,10 @@ Handles:
 """
 
 import html as html_mod
+import hmac
 import re
-from binascii import hexlify, unhexlify
+import time
+from binascii import Error as Base32Error, hexlify, unhexlify
 from urllib.parse import urlparse, urlencode, quote, urljoin
 
 import requests
@@ -22,6 +24,22 @@ from src.runtime import config
 
 class AuthenticationActionRequired(RuntimeError):
     """The identity provider requires an interactive authentication step."""
+
+
+def totp_code(secret, timestamp=None):
+    """Upstream's RFC 6238 six-digit SHA1 TOTP, with a 30-second step."""
+    normalized = ''.join(secret.split()).upper().rstrip('=')
+    if not normalized:
+        raise AuthenticationActionRequired('Configure the bound UIS_TOTP_SECRET in GitHub Actions Secrets')
+    try:
+        key = base64.b32decode(normalized + '=' * (-len(normalized) % 8))
+    except (ValueError, Base32Error):
+        raise AuthenticationActionRequired('UIS_TOTP_SECRET must be a Base32 binding key') from None
+    counter = int((time.time() if timestamp is None else timestamp) // 30)
+    digest = hmac.digest(key, counter.to_bytes(8, 'big'), 'sha1')
+    offset = digest[-1] & 0x0F
+    number = int.from_bytes(digest[offset:offset + 4], 'big') & 0x7FFFFFFF
+    return f'{number % 1_000_000:06d}'
 
 
 def require_login_token(data, context):
@@ -151,10 +169,45 @@ class WebVPNSession:
         self.verification_handler = verification_handler
 
     def _complete_auth(self, data, payload, url, headers):
-        if (isinstance(data, dict) and data.get("second") is True
-                and self.verification_handler is not None):
-            data = self.verification_handler(self.session, url, headers, payload, data)
+        if isinstance(data, dict) and data.get("second") is True:
+            if config.TOTP_SECRET or self.verification_handler is None:
+                data = self._authenticate_totp(data, payload, url, headers)
+            else:
+                data = self.verification_handler(self.session, url, headers, payload, data)
         return require_login_token(data, "CAS")
+
+    def _authenticate_totp(self, challenge, payload, url, headers):
+        # Preserve each gateway's URL and challenge context; never restart the password flow.
+        if 'userAndOtp' not in (challenge.get('moduleCodes') or []):
+            raise AuthenticationActionRequired('School requires a second factor but does not offer TOTP')
+        if not challenge.get('requestNumber') or not challenge.get('authChainCode'):
+            raise AuthenticationActionRequired('TOTP challenge is missing its authentication context')
+        code = totp_code(config.TOTP_SECRET)
+        request = {
+            'authModuleCode': 'userAndOtp',
+            'authChainCode': challenge['authChainCode'],
+            'entityId': payload['entityId'],
+            'requestNumber': challenge['requestNumber'],
+            'requestType': payload['requestType'],
+            'lck': payload['lck'],
+            'authPara': {
+                'loginName': challenge.get('userName') or payload['authPara']['loginName'],
+                'otpCode': code,
+            },
+        }
+        print('[Login] TOTP second factor...')
+        try:
+            response = self.session.post(url, json=request, headers=headers, timeout=60)
+            response.raise_for_status()
+            result = response.json()
+        except (requests.RequestException, ValueError):
+            raise AuthenticationActionRequired('TOTP request failed; automatic password retries stopped') from None
+        if not isinstance(result, dict) or str(result.get('code')) != '200':
+            raise AuthenticationActionRequired('TOTP rejected; check the bound secret and system clock')
+        if result.get('second') or not result.get('loginToken'):
+            raise AuthenticationActionRequired('TOTP did not finish authentication; further verification required')
+        print('[Login] TOTP OK')
+        return result
 
     def login(self, student_id: str = None, password: str = None) -> bool:
         """Execute the full 7-step IDP authentication flow.
