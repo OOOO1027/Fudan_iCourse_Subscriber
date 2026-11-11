@@ -122,6 +122,35 @@ class WebVPNSessionTests(unittest.TestCase):
             vpn._get_auth_context()
         self.assertEqual(vpn.session.get.call_count, 10)
 
+    def test_gateway_timeout_uses_upstream_idp_entry(self):
+        vpn = WebVPNSession()
+        self.addCleanup(vpn.session.close)
+        redirect = response("https://id.fudan.edu.cn/authenticate", 302)
+        redirect.headers["Location"] = "/ac/?lck=fallback-context"
+        vpn.session.get = Mock(side_effect=[requests.ReadTimeout(), redirect])
+        self.assertEqual(vpn._get_auth_context()[0], "fallback-context")
+        self.assertEqual(vpn.session.get.call_count, 2)
+        self.assertTrue(vpn.session.get.call_args_list[1].args[0].startswith(
+            "https://id.fudan.edu.cn/idp/authCenter/authenticate?"))
+
+    def test_idp_timeout_is_not_retried_inside_context(self):
+        vpn = WebVPNSession()
+        self.addCleanup(vpn.session.close)
+        vpn.session.get = Mock(side_effect=requests.ReadTimeout())
+        with self.assertRaises(requests.ReadTimeout):
+            vpn._get_auth_context()
+        self.assertEqual(vpn.session.get.call_count, 2)
+
+    def test_idp_timeout_after_gateway_redirect_is_not_hidden(self):
+        vpn = WebVPNSession()
+        self.addCleanup(vpn.session.close)
+        redirect = response("https://webvpn.fudan.edu.cn/login", 302)
+        redirect.headers["Location"] = "https://id.fudan.edu.cn/start"
+        vpn.session.get = Mock(side_effect=[redirect, requests.ReadTimeout()])
+        with self.assertRaises(requests.ReadTimeout):
+            vpn._get_auth_context()
+        self.assertEqual(vpn.session.get.call_count, 2)
+
     def test_auth_rejects_external_redirect(self):
         vpn = WebVPNSession()
         redirect = response("https://webvpn.fudan.edu.cn/login", 302)

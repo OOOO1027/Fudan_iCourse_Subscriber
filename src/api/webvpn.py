@@ -516,7 +516,15 @@ class WebVPNSession:
             urlparse(config.IDP_BASE).hostname,
         }
         for hop in range(10):
-            resp = self.session.get(url, allow_redirects=False, timeout=60)
+            try:
+                resp = self.session.get(url, allow_redirects=False, timeout=60)
+            except requests.Timeout:
+                if url != service_url or used_direct_auth:
+                    raise
+                print('    Gateway entry timed out; trying the upstream IDP entry in the same session.')
+                url = auth_url
+                used_direct_auth = True
+                continue
             resp.raise_for_status()
             location = resp.headers.get("Location", "")
             if resp.status_code in (301, 302, 303, 307, 308) and location:
