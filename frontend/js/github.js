@@ -137,7 +137,7 @@ async function _fetchPublicIndex(owner, repo, branch) {
   return null;
 }
 
-async function _sha256Hex(bytes) {
+async function _ghSha256BytesHex(bytes) {
   const hash = await window.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
 }
@@ -151,7 +151,7 @@ async function _fetchPublicShard(url, entry) {
   });
   if (!res.ok) throw new Error(`Failed to download shard: ${res.status}`);
   const bytes = new Uint8Array(await res.arrayBuffer());
-  if (await _sha256Hex(bytes) !== entry.sha256) {
+  if (await _ghSha256BytesHex(bytes) !== entry.sha256) {
     throw new Error("Course data changed while loading. Please retry shortly.");
   }
   return bytes;
@@ -164,7 +164,7 @@ async function _fetchShardManifest(owner, repo, branch, token) {
       format: "sharded",
       commitSha: null,
       publicIndex,
-      index: { sha: await _sha256Hex(publicIndex.bytes), name: "icourse-index.enc" },
+      index: { sha: await _ghSha256BytesHex(publicIndex.bytes), name: "icourse-index.enc" },
     };
   }
 
