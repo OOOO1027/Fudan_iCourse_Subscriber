@@ -136,14 +136,16 @@ const _DETAIL_VIEW_LABEL = {
 };
 
 /* ── Sharded loading helpers ── */
-async function _loadShard(owner, repo, entry, password, token) {
+async function _loadShard(owner, repo, entry, password, token, publicUrl) {
   // Returns { bytes, downloaded: bool } — downloaded=true means we hit
   // the network; false means IndexedDB cache hit (instant).
   var cacheKey = "shard:" + entry.sha;
   var cached = await _idbGet(cacheKey);
   if (cached) return { bytes: cached, downloaded: false };
 
-  var encBytes = await ICS.github.fetchBlobBytes(owner, repo, entry.sha, token);
+  var encBytes = publicUrl
+    ? await ICS.github.fetchPublicShard(publicUrl, entry)
+    : await ICS.github.fetchBlobBytes(owner, repo, entry.sha, token);
   var gzipped = await ICS.crypto.decrypt(
     encBytes, password, ICS.crypto.NEW_ITERATIONS,
   );
@@ -157,8 +159,10 @@ async function _loadShard(owner, repo, entry, password, token) {
   return { bytes: dbBytes, downloaded: true };
 }
 
-async function _fetchAndDecryptIndex(owner, repo, indexSha, password, token) {
-  var indexEnc = await ICS.github.fetchBlobBytes(owner, repo, indexSha, token);
+async function _fetchAndDecryptIndex(manifest, owner, repo, password, token) {
+  var indexEnc = manifest.publicIndex
+    ? manifest.publicIndex.bytes
+    : await ICS.github.fetchBlobBytes(owner, repo, manifest.index.sha, token);
   var indexBytes = await ICS.crypto.decrypt(
     indexEnc, password, ICS.crypto.NEW_ITERATIONS,
   );
@@ -171,7 +175,7 @@ async function _fetchAndDecryptIndex(owner, repo, indexSha, password, token) {
 async function _loadFromShardManifest(manifest, owner, repo, password, token, progress) {
   // 0) Check if the full merged DB is already cached for this commit SHA.
   //    If the data branch hasn't moved, we can skip ALL shard loading.
-  var mergedKey = "merged:" + manifest.commitSha;
+  var mergedKey = "merged:" + (manifest.commitSha || manifest.index.sha);
   var cachedMerged = await _idbGet(mergedKey);
   if (cachedMerged) {
     await ICS.db.initDB(cachedMerged);
@@ -190,7 +194,7 @@ async function _loadFromShardManifest(manifest, owner, repo, password, token, pr
 
   if (!index) {
     index = await _fetchAndDecryptIndex(
-      owner, repo, manifest.index.sha, password, token,
+      manifest, owner, repo, password, token,
     );
     await _idbPut("index:v2:" + manifest.index.sha, index);
     try { localStorage.setItem(_LS + "indexSha", manifest.index.sha); } catch (e) {}
@@ -202,12 +206,14 @@ async function _loadFromShardManifest(manifest, owner, repo, password, token, pr
   var downloaded = 0;
   for (var i = 0; i < total; i++) {
     var shardMeta = index.shards[i];
-    var entry = manifest.shards.find(function (s) { return s.name === shardMeta.name; });
+    var entry = manifest.publicIndex
+      ? { ...shardMeta, sha: shardMeta.sha256 }
+      : manifest.shards.find(function (s) { return s.name === shardMeta.name; });
     if (!entry) {
       console.warn("Shard listed in index but missing from tree:", shardMeta.name);
       continue;
     }
-    var result = await _loadShard(owner, repo, entry, password, token);
+    var result = await _loadShard(owner, repo, entry, password, token, manifest.publicIndex?.url);
     if (result.downloaded) {
       downloaded++;
       if (progress) progress(downloaded, total, shardMeta.name);
@@ -309,7 +315,7 @@ document.addEventListener("alpine:init", () => {
     async _loadDB(creds) {
       this.view = "loading"; this.error = null;
       try {
-        this.loadingMsg = "Connecting to GitHub API...";
+        this.loadingMsg = "Checking course data...";
         var manifest = await ICS.github.fetchShardManifest(
           this.repoOwner, this.repoName, this.dataBranch, creds.token,
         );
@@ -751,15 +757,7 @@ document.addEventListener("alpine:init", () => {
         if (manifest.format === "sharded") {
           // Probe the index decryption to validate creds before we save.
           var pw = await ICS.crypto.buildPasswordV2(this.setup);
-          var indexEnc = await ICS.github.fetchBlobBytes(
-            this.repoOwner, this.repoName, manifest.index.sha, this.setup.token,
-          );
-          var indexPt = await ICS.crypto.decrypt(
-            indexEnc, pw, ICS.crypto.NEW_ITERATIONS,
-          );
-          if (!ICS.crypto.isJsonObj(indexPt)) {
-            throw new Error("凭据验证失败：索引解密结果不像 JSON。");
-          }
+          await _fetchAndDecryptIndex(manifest, this.repoOwner, this.repoName, pw, this.setup.token);
         } else {
           var encBytes = await ICS.github.fetchBlobBytes(
             this.repoOwner, this.repoName, manifest.legacy.sha, this.setup.token,

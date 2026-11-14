@@ -123,7 +123,51 @@ async function _fetchBlobBytes(owner, repo, blobSha, token) {
   return new Uint8Array(buffer);
 }
 
+function _publicDataUrl(owner, repo, branch) {
+  return "https://raw.githubusercontent.com/"
+    + [owner, repo, branch].map(encodeURIComponent).join("/") + "/data/";
+}
+
+async function _fetchPublicIndex(owner, repo, branch) {
+  const url = _publicDataUrl(owner, repo, branch);
+  try {
+    const res = await fetch(url + "icourse-index.enc", { cache: "no-cache", credentials: "omit" });
+    if (res.ok) return { url, bytes: new Uint8Array(await res.arrayBuffer()) };
+  } catch (e) { /* Private repos and unavailable raw hosts fall back to the API. */ }
+  return null;
+}
+
+async function _sha256Hex(bytes) {
+  const hash = await window.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function _fetchPublicShard(url, entry) {
+  if (!/^[A-Za-z0-9_-]+\.db\.gz\.enc$/.test(entry.name) || !/^[a-f0-9]{64}$/.test(entry.sha256)) {
+    throw new Error("Invalid shard entry in encrypted index.");
+  }
+  const res = await fetch(url + "shards/" + entry.name + "?v=" + entry.sha256, {
+    credentials: "omit",
+  });
+  if (!res.ok) throw new Error(`Failed to download shard: ${res.status}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (await _sha256Hex(bytes) !== entry.sha256) {
+    throw new Error("Course data changed while loading. Please retry shortly.");
+  }
+  return bytes;
+}
+
 async function _fetchShardManifest(owner, repo, branch, token) {
+  const publicIndex = await _fetchPublicIndex(owner, repo, branch);
+  if (publicIndex) {
+    return {
+      format: "sharded",
+      commitSha: null,
+      publicIndex,
+      index: { sha: await _sha256Hex(publicIndex.bytes), name: "icourse-index.enc" },
+    };
+  }
+
   // Walk the data branch tree to find icourse-index.enc + every shard file.
   // Returns:
   //   { commitSha, format: "sharded" | "legacy",
@@ -417,6 +461,7 @@ window.ICS.github = {
   getLatestCommitSha: _getLatestCommitSha,
   fetchEncryptedDB: _fetchEncryptedDB,
   fetchBlobBytes: _fetchBlobBytes,
+  fetchPublicShard: _fetchPublicShard,
   fetchShardManifest: _fetchShardManifest,
   triggerExportWorkflow: _triggerExportWorkflow,
   triggerDeleteWorkflow: _triggerDeleteWorkflow,
