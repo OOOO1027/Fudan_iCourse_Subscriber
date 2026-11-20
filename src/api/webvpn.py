@@ -162,18 +162,14 @@ def get_ordinary_url(vpn_url: str) -> str:
 class WebVPNSession:
     """Manages a WebVPN session with full IDP authentication."""
 
-    def __init__(self, verification_handler=None):
+    def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": config.USER_AGENT})
         self.logged_in = False
-        self.verification_handler = verification_handler
 
     def _complete_auth(self, data, payload, url, headers):
         if isinstance(data, dict) and data.get("second") is True:
-            if config.TOTP_SECRET or self.verification_handler is None:
-                data = self._authenticate_totp(data, payload, url, headers)
-            else:
-                data = self.verification_handler(self.session, url, headers, payload, data)
+            data = self._authenticate_totp(data, payload, url, headers)
         return require_login_token(data, "CAS")
 
     def _authenticate_totp(self, challenge, payload, url, headers):

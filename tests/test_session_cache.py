@@ -60,6 +60,17 @@ class CacheTests(unittest.TestCase):
         with patch.object(cache.config, 'PASSWORD', 'wrong'):
             self.assertIsNone(cache.load_verified_session())
 
+    def test_seal_round_trip_and_tamper_rejection(self):
+        blob = cache.seal(b'private-data', 'test-user', 'test-password', 'session-cache')
+        self.assertNotIn(b'private-data', blob)
+        self.assertEqual(cache.unseal(blob, 'test-user', 'test-password', 'session-cache'), b'private-data')
+        for value, password, purpose in (
+            (blob, 'wrong', 'session-cache'), (blob, 'test-password', 'other-purpose'),
+            (blob[:-1] + bytes([blob[-1] ^ 1]), 'test-password', 'session-cache'),
+        ):
+            with self.assertRaises(ValueError):
+                cache.unseal(value, 'test-user', password, purpose)
+
     def test_cache_cannot_be_written_in_checkout(self):
         with patch.dict(os.environ, {'ICOURSE_SESSION_FILE': '/outside-runner/session.enc'}):
             with self.assertRaises(ValueError):

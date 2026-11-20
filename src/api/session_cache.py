@@ -1,15 +1,35 @@
 """Authenticated encrypted session cache, opt-in via a runner-temporary path."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import time
 
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 import requests
-from src.api.qr_verification import seal, unseal
 from src.api.webvpn import WebVPNSession, get_vpn_url
 from src.runtime import config
 
 DOMAINS = {'webvpn.fudan.edu.cn', 'id.fudan.edu.cn', 'icourse.fudan.edu.cn', 'fudan.edu.cn'}
+
+
+def seal(data, student_id, password, purpose):
+    salt = get_random_bytes(16)
+    key = hashlib.pbkdf2_hmac('sha256', (student_id + ':' + password).encode(), salt, 200000)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=get_random_bytes(12))
+    cipher.update(purpose.encode())
+    encrypted, tag = cipher.encrypt_and_digest(data)
+    return b'ICSA1' + salt + cipher.nonce + tag + encrypted
+
+
+def unseal(data, student_id, password, purpose):
+    if data[:5] != b'ICSA1' or len(data) < 49:
+        raise ValueError('Invalid encrypted authentication artifact')
+    key = hashlib.pbkdf2_hmac('sha256', (student_id + ':' + password).encode(), data[5:21], 200000)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=data[21:33])
+    cipher.update(purpose.encode())
+    return cipher.decrypt_and_verify(data[49:], data[33:49])
 
 
 def cache_path():
