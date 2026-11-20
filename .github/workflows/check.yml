@@ -9,8 +9,13 @@ on:
       - 'tests/test_webvpn_session.py'
       - '.github/workflows/check.yml'
   schedule:
-    # Every two hours, 08:37-22:37 Asia/Shanghai (UTC+8).
-    - cron: "37 0-14/2 * * *"
+    # Every two hours, 08:39-22:39 Asia/Shanghai (UTC+8).
+    # GitHub delivers this event hours late on this fork and has twice stopped
+    # delivering it altogether (2026-10-14 and 2026-11-11), both times shortly
+    # after this file was edited with the cron line left unchanged. Pushing a
+    # different minute brought it back on 2026-10-20, so change the minute
+    # whenever this file is edited. watchdog.yml covers the gaps.
+    - cron: "39 0-14/2 * * *"
   workflow_dispatch:
 
 permissions:

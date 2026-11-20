@@ -1,0 +1,61 @@
+name: iCourse Watchdog
+
+# Second, independent entry point for the scheduled check.
+#
+# check.yml's own `schedule` trigger is delivered hours late on this fork and
+# has stopped firing entirely twice. This workflow starts iCourse Check
+# whenever its newest run is older than STALE_MINUTES, so a dead or delayed
+# trigger in check.yml no longer means a silent multi-day gap.
+#
+# Keep this file stable: avoid editing it unless the schedule itself changes.
+
+on:
+  schedule:
+    # Odd hours, 09:13-23:13 Asia/Shanghai (UTC+8); check.yml uses even hours.
+    - cron: "13 1-15/2 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: icourse-watchdog
+  cancel-in-progress: true
+
+jobs:
+  kick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start iCourse Check if it is stale
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STALE_MINUTES: "100"
+          # A run can legitimately take up to its 360-minute job timeout.
+          RUNNING_MINUTES: "370"
+        run: |
+          set -euo pipefail
+          # Status and age (minutes) of the newest run, computed by jq so the
+          # check does not depend on the runner's date(1) flavour.
+          latest=$(gh api "repos/$GH_REPO/actions/workflows/check.yml/runs?per_page=1" \
+            --jq '.workflow_runs[0] | select(. != null) | "\(.status) \((now - (.created_at | fromdateiso8601)) / 60 | floor)"') || latest=""
+          status=${latest%% *}
+          age=${latest##* }
+          if [[ "$age" =~ ^-?[0-9]+$ ]]; then
+            echo "Newest iCourse Check run: status=$status, age=${age}min."
+            if [ "$status" != "completed" ] && [ "$age" -lt "$RUNNING_MINUTES" ]; then
+              echo "A run is still active; nothing to do."
+              exit 0
+            fi
+            if [ "$age" -lt "$STALE_MINUTES" ]; then
+              echo "Recent enough; nothing to do."
+              exit 0
+            fi
+          else
+            # An extra run is harmless; a missed one is what this guards against.
+            echo "Could not read the newest run; starting one to be safe."
+          fi
+          # No --ref: gh starts the workflow on the default branch.
+          gh workflow run check.yml
+          echo "Started iCourse Check."
