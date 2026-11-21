@@ -72,24 +72,59 @@ def describe_sources(client):
     return names, values
 
 
-def probe(client):
-    url, headers = stream(client)
-    # ffmpeg and ffprobe errors can contain the signed URL and cookies: never print them.
-    result = subprocess.run(
+RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+
+
+def quiet(cmd, timeout):
+    """Run ffmpeg/ffprobe; their errors can hold the signed URL and cookies, so never print them."""
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    if result.returncode:
+        raise RuntimeError(f"{cmd[0]} failed (details withheld from public logs)")
+    return result.stdout
+
+
+def probe(url, headers):
+    data = json.loads(quiet(
         ["ffprobe", "-v", "error", "-headers", headers, "-i", url, "-select_streams", "v:0",
          "-show_entries", "format=duration,bit_rate:stream=codec_name,width,height,avg_frame_rate",
-         "-of", "json"], capture_output=True, timeout=180)
-    if result.returncode:
-        raise RuntimeError("ffprobe failed (details withheld from public logs)")
-    data = json.loads(result.stdout)
+         "-of", "json"], 180))
     return {**data["format"], **data["streams"][0]}
 
 
-def sample_frames(client, directory, duration):
+def survey_sources(client, directory):
+    """What each listed replay source is: its format and three stills."""
+    info = client.get_sub_info(COURSE, SUB)
+    now = info.get("now")
+    now = int(now) if isinstance(now, str) else now
+    found = {}
+    for key, entry in (info.get("video_list") or {}).items():
+        base = entry.get("preview_url") if isinstance(entry, dict) else None
+        if not (isinstance(base, str) and base.endswith(".mp4")):
+            continue
+        try:
+            url, headers = client.get_stream_params(client.sign_video_url(base, now=now))
+            found[key] = probe(url, headers)
+            for share in (0.2, 0.5, 0.8):
+                at = int(float(found[key]["duration"]) * share)
+                quiet(["ffmpeg", "-nostdin", "-y", "-headers", headers, *RECONNECT, "-ss", str(at),
+                       "-i", url, "-frames:v", "1", "-q:v", "3",
+                       str(directory / f"source-{key}-{at:05d}s.jpg")], 180)
+        except Exception as exc:                  # a survey must not stop the trial
+            found.setdefault(key, {})["error"] = type(exc).__name__
+        print(f"Source {key}:", {k: found[key].get(k) for k in
+              ("codec_name", "width", "height", "avg_frame_rate", "bit_rate", "duration", "error")},
+              flush=True)
+    return found
+
+
+def sample_from(client, directory, start, done):
+    """Sample from `start` seconds on; returns the times of the frames written."""
     url, headers = stream(client)
-    cmd = ["ffmpeg", "-nostdin", "-nostats", "-y", "-headers", headers, "-i", url, "-map", "0:v:0", "-vf",
+    seek = ["-ss", f"{start:.3f}"] if start else []
+    cmd = ["ffmpeg", "-nostdin", "-nostats", "-y", "-headers", headers, *RECONNECT, *seek,
+           "-i", url, "-map", "0:v:0", "-vf",
            f"setpts=PTS-STARTPTS,select='isnan(prev_selected_t)+gte(t-prev_selected_t,{INTERVAL})',showinfo",
-           "-fps_mode", "vfr", str(directory / "sample-%05d.png")]
+           "-fps_mode", "vfr", "-start_number", str(done + 1), str(directory / "sample-%05d.png")]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     timer = threading.Timer(3600, proc.kill)
     timer.start()
@@ -98,9 +133,9 @@ def sample_frames(client, directory, duration):
         for line in proc.stderr:
             match = re.search(rb"Parsed_showinfo.*\bn:\s*\d+.*pts_time:([\d.]+)", line)
             if match:
-                times.append(float(match.group(1)))
-                if len(times) % 200 == 0:
-                    print(f"  sampled {len(times)} frames, at {clock(times[-1] * 1000)}", flush=True)
+                times.append(start + float(match.group(1)))
+                if (done + len(times)) % 200 == 0:
+                    print(f"  sampled {done + len(times)} frames, at {clock(times[-1] * 1000)}", flush=True)
                     if shutil.disk_usage(directory).free < 2 * 1024 ** 3:
                         raise RuntimeError("Scratch disk nearly full")
         code = proc.wait()
@@ -109,11 +144,29 @@ def sample_frames(client, directory, duration):
         if proc.poll() is None:
             proc.kill()
         proc.wait()
-    paths = sorted(directory.glob("sample-*.png"))
-    if code or len(paths) != len(times) or not times or times[-1] < duration - 2 * INTERVAL - 10:
-        raise RuntimeError(f"Frame sampling incomplete: exit {code}, {len(paths)} files, "
-                           f"{len(times)} timestamps (details withheld from public logs)")
-    return times, paths
+    return times, code
+
+
+def sample_frames(client, directory, duration):
+    """The gateway can close the stream early and ffmpeg then exits cleanly, so
+    resume after the last frame until the whole lecture is covered."""
+    times, restarts = [], 0
+    while not times or times[-1] < duration - 2 * INTERVAL - 10:
+        start = times[-1] + INTERVAL if times else 0.0
+        got, code = sample_from(client, directory, start, len(times))
+        times += got
+        if not got or code:
+            restarts += 1
+            print(f"  stream stopped (exit {code}, {len(got)} new frames); attempt {restarts}", flush=True)
+            if restarts > 6:
+                raise RuntimeError("Frame sampling incomplete (details withheld from public logs)")
+            time.sleep(10)
+        elif times[-1] < duration - 2 * INTERVAL - 10:
+            print(f"  stream ended early at {clock(times[-1] * 1000)}; resuming", flush=True)
+    paths = sorted(directory.glob("sample-*.png"))[:len(times)]
+    if len(paths) != len(times):
+        raise RuntimeError(f"Frame files and timestamps disagree: {len(paths)} vs {len(times)}")
+    return times, paths, restarts
 
 
 def strips(times, paths, every=120, cols=6, per_sheet=42):
@@ -155,51 +208,59 @@ def main():
     source_names, sources = describe_sources(client)
     print("Replay sources listed by the platform (field names only):",
           json.dumps(source_names, ensure_ascii=False), flush=True)
-    video = probe(client)
+    video = probe(*stream(client))
     duration = float(video["duration"])
     print("Video:", {k: video.get(k) for k in ("codec_name", "width", "height", "avg_frame_rate",
                                                "bit_rate", "duration")}, flush=True)
 
     with tempfile.TemporaryDirectory(prefix="board-frames-") as scratch, \
             tempfile.TemporaryDirectory(prefix="board-review-") as review:
-        t0 = time.time()
-        times, paths = sample_frames(client, Path(scratch), duration)
-        t_sample = time.time() - t0
-        scratch_gb = sum(p.stat().st_size for p in paths) / 1024 ** 3
-        print(f"Sampled {len(paths)} frames in {t_sample:.0f}s, {scratch_gb:.1f} GB", flush=True)
-
-        def load(i):
-            with Image.open(paths[i]) as frame:
-                return np.asarray(frame.convert("RGB"))
-
-        t0 = time.time()
-        extractor = BoardExtractor(load)
-        for i, t in enumerate(times):
-            extractor.add(load(i), round(t * 1000))
-            if (i + 1) % 400 == 0:
-                print(f"  analysed {i + 1} frames in {time.time() - t0:.0f}s", flush=True)
-        t_track = time.time() - t0
-        t0 = time.time()
-        pages, report = extractor.finish()
-        t_finish = time.time() - t0
-
         review = Path(review)
-        (review / "pages").mkdir()
-        for k, page in enumerate(pages):
-            page.image.save(review / "pages" / f"page-{k + 1:02d}.png")
-        if pages:
-            contact_sheet(pages).save(review / "sheet.jpg", quality=90)
-        for k, sheet in enumerate(strips(times, paths)):
-            sheet.save(review / f"strip-{k + 1}.jpg", quality=80)
-        report.update({
-            "course_id": COURSE, "sub_id": SUB, "sources": sources,
-            "video": {k: video.get(k) for k in ("codec_name", "width", "height",
-                                                "avg_frame_rate", "bit_rate", "duration")},
-            "seconds": {"sampling": round(t_sample), "tracking": round(t_track),
-                        "composing": round(t_finish), "total": round(time.time() - started)},
-            "scratch_gb": round(scratch_gb, 2), "page_list": [p.meta() for p in pages]})
-        (review / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=float))
-        size = encrypt_bundle(review, output / "bundle.bin")
+        try:
+            (review / "sources").mkdir()
+            survey = survey_sources(client, review / "sources")
+            t0 = time.time()
+            times, paths, restarts = sample_frames(client, Path(scratch), duration)
+            t_sample = time.time() - t0
+            scratch_gb = sum(p.stat().st_size for p in paths) / 1024 ** 3
+            print(f"Sampled {len(paths)} frames in {t_sample:.0f}s, {scratch_gb:.1f} GB, "
+                  f"{restarts} restarts", flush=True)
+            for k, sheet in enumerate(strips(times, paths)):
+                sheet.save(review / f"strip-{k + 1}.jpg", quality=80)
+
+            def load(i):
+                with Image.open(paths[i]) as frame:
+                    return np.asarray(frame.convert("RGB"))
+
+            t0 = time.time()
+            extractor = BoardExtractor(load)
+            for i, t in enumerate(times):
+                extractor.add(load(i), round(t * 1000))
+                if (i + 1) % 400 == 0:
+                    print(f"  analysed {i + 1} frames in {time.time() - t0:.0f}s", flush=True)
+            t_track = time.time() - t0
+            t0 = time.time()
+            pages, report = extractor.finish()
+            t_finish = time.time() - t0
+
+            (review / "pages").mkdir()
+            for k, page in enumerate(pages):
+                page.image.save(review / "pages" / f"page-{k + 1:02d}.png")
+            if pages:
+                contact_sheet(pages).save(review / "sheet.jpg", quality=90)
+            report.update({
+                "course_id": COURSE, "sub_id": SUB, "sources": sources, "source_survey": survey,
+                "stream_restarts": restarts,
+                "video": {k: video.get(k) for k in ("codec_name", "width", "height",
+                                                    "avg_frame_rate", "bit_rate", "duration")},
+                "seconds": {"sampling": round(t_sample), "tracking": round(t_track),
+                            "composing": round(t_finish), "total": round(time.time() - started)},
+                "scratch_gb": round(scratch_gb, 2), "page_list": [p.meta() for p in pages]})
+            (review / "report.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=1, default=float))
+        finally:
+            # Whatever was produced before a failure is still worth reviewing.
+            size = encrypt_bundle(review, output / "bundle.bin")
 
     print(f"Pages: {len(pages)} (from {report['candidates']} candidates, {len(report['wipes'])} wipes); "
           f"coverage {report['coverage']['share']}; dropped blocks {report['dropped_blocks']}", flush=True)
