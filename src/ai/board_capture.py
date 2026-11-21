@@ -123,6 +123,7 @@ class _Sheet:
         self.ink = 0
         self.seen = -1
         self.moves = 0
+        self.unsettled: set[int] = set()  # samples at which it had just been slid
 
     def frame_rect(self) -> tuple:
         r0, c0, r1, c1 = self.vis[self.seen]
@@ -167,9 +168,16 @@ class _Sheet:
 
     def update(self, i, seg, offset, obs, hi, near, confirm):
         x0, y0, x1, y1 = seg
-        if self.pos and offset != self.offset:
-            self.moves += 1
+        slid = bool(self.pos) and abs(offset - self.offset) > 2
         r0, r1 = y0 - offset, y1 - offset
+        self.offset, self.seen = offset, i
+        self.pos[i], self.vis[i] = offset, (r0, x0, r1, x1)
+        if slid:
+            # Caught mid-slide the board is blurred and its position a guess:
+            # note where it is, read its chalk from the next sample on.
+            self.moves += 1
+            self.unsettled.add(i)
+            return
         sl = (slice(r0, r1), slice(x0, x1))
         state, cnt = self.state[sl], self.cnt[sl]
         # Chalk counts as gone only if nothing is left next to it either: after a
@@ -188,8 +196,6 @@ class _Sheet:
             self.ink = int(self.state.sum())
             self.grown = _morph(self.state, 3, grow=True)
         self.last[sl][obs & near & state] = i
-        self.offset, self.seen = offset, i
-        self.pos[i], self.vis[i] = offset, (r0, x0, r1, x1)
 
 
 @dataclass
@@ -202,6 +208,7 @@ class Page:
     segments: list         # [{"start_ms", "end_ms", "tiles", "box"}], box in page pixels
     ink_blocks: int
     uncaptured: float      # share of chalk blocks no unobstructed frame showed
+    frames: int = 1        # frames the image is composed from
     absorbed: list = field(default_factory=list)   # other views of this content
     # block-level bookkeeping, not part of the output
     occ: np.ndarray = field(default=None, repr=False)
@@ -215,7 +222,8 @@ class Page:
         return {"rect": list(self.rect), "first_ms": self.first_ms,
                 "last_ms": self.last_ms, "lost_ms": self.lost_ms,
                 "segments": self.segments, "ink_blocks": self.ink_blocks,
-                "uncaptured": round(self.uncaptured, 4), "absorbed": self.absorbed}
+                "uncaptured": round(self.uncaptured, 4), "frames": self.frames,
+                "absorbed": self.absorbed}
 
 
 class BoardExtractor:
@@ -265,8 +273,18 @@ class BoardExtractor:
             seg = free[g]
             sc = s.agree(crop(obs, seg), crop(lo, seg), crop(near, seg), seg, s.offset, MIN_REG)
             unmoved = abs(seg[1] - fy0) <= 2 and abs(seg[3] - fy1) <= 2
-            if (sc is not None and sc >= 0.5) or (sc is None and unmoved):
-                assign(s, g, s.offset)
+            if sc is None:
+                if unmoved:
+                    assign(s, g, s.offset)
+                continue
+            # A nudge of a block or two is followed without a search.
+            offset = s.offset
+            for near_by in (s.offset - 1, s.offset + 1, s.offset - 2, s.offset + 2):
+                other = s.agree(crop(obs, seg), crop(lo, seg), crop(near, seg), seg, near_by, MIN_REG)
+                if other is not None and other > sc + 0.05:
+                    sc, offset = other, near_by
+            if sc >= 0.5:
+                assign(s, g, offset)
 
         # A panel with chalk that no sheet claimed: was a known board slid here?
         idle = [s for s in self.sheets if s.seen != i and s.ink >= MIN_REG]
@@ -405,52 +423,76 @@ class BoardExtractor:
         occ = b0 >= 0
 
         # Candidate samples: the recent ones densely, older ones sparsely.
-        seen.sort()
+        seen = sorted(t for t in seen if t not in s.unsettled or t == ref)
         cand = np.array(sorted(set(seen[-120:]) | set(seen[:-120][::6])))
         hb = self.F.shape[1]
-        brd = np.zeros((len(cand), h, w), bool)       # board, where this sheet's panel was
-        for j, t in enumerate(cand):
+        brd, lo, hi = (np.zeros((len(cand), h, w), bool) for _ in range(3))
+        for j, t in enumerate(cand):                  # each sample, where this sheet's panel was
             p = s.pos[t]
             vr0, vc0, vr1, vc1 = s.vis[t]
             a0, a1 = max(r0, vr0, -p), min(r1, vr1, hb - p)
             x0, x1 = max(c0, vc0), min(c1, vc1)
             if a0 < a1 and x0 < x1:
-                brd[j, a0 - r0:a1 - r0, x0 - c0:x1 - c0] = (self.F[t, a0 + p:a1 + p, x0:x1] & BRD) > 0
+                f = self.F[t, a0 + p:a1 + p, x0:x1]
+                at = (j, slice(a0 - r0, a1 - r0), slice(x0 - c0, x1 - c0))
+                brd[at], lo[at], hi[at] = (f & BRD) > 0, (f & LO) > 0, (f & HI) > 0
+        near = np.stack([_morph(m, 3, grow=True) for m in lo])
+        occ_near = _morph(occ, 3, grow=True)
         # Blocks on a panel's rim flicker between board and not; only the
         # interior tells whether something stands in front of a tile.
-        core = _morph(brd.mean(axis=0) >= 0.5, 5, grow=False)
+        core = _morph(brd.mean(axis=0) >= 0.2, 5, grow=False)
+        tiles = [(slice(ty, min(ty + TILE, h)), slice(tx, min(tx + TILE, w)))
+                 for ty in range(0, h, TILE) for tx in range(0, w, TILE)]
+        # A frame serves a tile by what it shows there: the page's chalk, and no other.
+        score = np.full((len(cand), len(tiles)), -np.inf)
+        hits = np.zeros(score.shape, int)
+        for n, (sy, sx) in enumerate(tiles):
+            wide = (slice(None), slice(max(sy.start - 2, 0), sy.stop + 2),
+                    slice(max(sx.start - 2, 0), sx.stop + 2))
+            here = (slice(None), sy, sx)
+            clear = (~(core[wide[1:]] & ~brd[wide]).any(axis=(1, 2))
+                     & (brd[here].mean(axis=(1, 2)) >= 0.9))
+            hits[:, n] = (occ[sy, sx] & near[here]).sum(axis=(1, 2))
+            stray = (hi[here] & ~occ_near[sy, sx]).sum(axis=(1, 2))
+            score[clear, n] = (hits[:, n] - stray)[clear]
+        # A frame from before a tile's last chalk appeared would lose that chalk, so
+        # only later frames may stand in for the best one; without any, take the best.
+        ready = np.array([b0[sy, sx][occ[sy, sx]].max(initial=-1) for sy, sx in tiles])
+        late = np.isfinite(score) & (cand[:, None] >= ready[None, :])
+        some = late.any(axis=0)
+        pool = np.where(some[None, :], late, np.isfinite(score))
+        best = np.where(pool, score, -np.inf).max(axis=0)
+        good = pool & (score >= best - some)
+        # As few frames as possible, so that the page looks like one photograph.
+        choice = np.full(len(tiles), -1)
+        left = good.any(axis=0)
+        while left.any():
+            serves = good[:, left].sum(axis=1)
+            j = len(serves) - 1 - int(np.argmax(serves[::-1]))    # the latest of the best
+            choice[left & good[j]] = j
+            left &= ~good[j]
+        if (choice >= 0).any():
+            choice[choice < 0] = np.bincount(choice[choice >= 0]).argmax()   # never unobstructed
+        else:
+            choice[:] = int(np.searchsorted(cand, ref))
+        captured = int(hits[choice, np.arange(len(tiles))][np.isfinite(score[choice, np.arange(len(tiles))])].sum())
         image = Image.new("RGB", (w * BLOCK, h * BLOCK)) if images else None
-        picks: dict[int, list] = {}
-        captured = 0
-        for ty in range(0, h, TILE):
-            for tx in range(0, w, TILE):
-                sl = (slice(ty, min(ty + TILE, h)), slice(tx, min(tx + TILE, w)))
-                a, b = b0[sl][occ[sl]], b1[sl][occ[sl]]
-                wide = (slice(max(ty - 2, 0), ty + TILE + 2), slice(max(tx - 2, 0), tx + TILE + 2))
-                blocked = (core[wide] & ~brd[(slice(None), *wide)]).any(axis=(1, 2))
-                clear = ~blocked & (brd[(slice(None), *sl)].mean(axis=(1, 2)) >= 0.5)
-                shown = ((a[None, :] <= cand[:, None]) & (cand[:, None] <= b[None, :])).sum(axis=1)
-                score = np.where(clear, shown, -1)
-                best = len(cand) - 1 - int(np.argmax(score[::-1]))   # latest of the best
-                if score[best] < 0:
-                    best = int(np.searchsorted(cand, ref))            # never unobstructed
-                else:
-                    captured += int(score[best])
-                picks.setdefault(int(cand[best]), []).append(sl)
         if images:
-            for t, tiles in picks.items():
+            for j in np.unique(choice):
+                t = int(cand[j])
                 frame, p = self._frame(t), s.pos[t]
-                for sy, sx in tiles:
-                    top = (r0 + sy.start + p) * BLOCK
-                    left = (c0 + sx.start) * BLOCK
+                for n in np.flatnonzero(choice == j):
+                    sy, sx = tiles[n]
+                    top, left_px = (r0 + sy.start + p) * BLOCK, (c0 + sx.start) * BLOCK
                     piece = frame[max(top, 0):top + (sy.stop - sy.start) * BLOCK,
-                                  left:left + (sx.stop - sx.start) * BLOCK]
+                                  left_px:left_px + (sx.stop - sx.start) * BLOCK]
                     image.paste(Image.fromarray(piece), (sx.start * BLOCK, sy.start * BLOCK))
+        frames_used = len(np.unique(choice))
         total = int(occ.sum())
         p = s.pos[ref]
         page = Page(rect=(c0 * BLOCK, (r0 + p) * BLOCK, c1 * BLOCK, (r1 + p) * BLOCK), first_ms=0,
                     last_ms=self.times[ref], lost_ms=lost_ms, image=image, segments=[],
-                    ink_blocks=total, uncaptured=1 - captured / max(total, 1),
+                    ink_blocks=total, uncaptured=1 - captured / max(total, 1), frames=frames_used,
                     occ=occ, born=b0, seen=b0.copy(), ref=ref, sheet=k, origin=(r0, c0))
         self._timeline(page)
         return page

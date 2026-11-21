@@ -76,10 +76,19 @@ RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_ma
 
 
 def quiet(cmd, timeout):
-    """Run ffmpeg/ffprobe; their errors can hold the signed URL and cookies, so never print them."""
+    """Run ffmpeg/ffprobe; their errors can hold the signed URL and cookies, so
+    only say which known kind of failure it was."""
     result = subprocess.run(cmd, capture_output=True, timeout=timeout)
     if result.returncode:
-        raise RuntimeError(f"{cmd[0]} failed (details withheld from public logs)")
+        text = result.stderr.decode(errors="replace").lower()
+        kinds = [k for k in (
+            "403 forbidden", "404 not found", "server returned 4", "server returned 5",
+            "connection timed out", "connection reset", "end of file", "invalid data",
+            "unrecognized option", "option not found", "invalid argument", "no such file",
+            "error opening output", "does not contain an image sequence", "non full-range",
+            "unable to choose an output format", "at least one output file", "conversion failed",
+            "error while decoding", "output file is empty", "nothing was written") if k in text]
+        raise RuntimeError(f"{cmd[0]} failed with exit {result.returncode}: {kinds}")
     return result.stdout
 
 
@@ -109,12 +118,14 @@ def survey_sources(client, directory):
             for at in (300, 3600):
                 still = directory / f"source-{key}-{at:05d}s.png"
                 quiet(["ffmpeg", "-nostdin", "-y", "-headers", headers, *RECONNECT, "-i", url,
-                       "-ss", str(at), "-frames:v", "1", str(still)], 600)
+                       "-map", "0:v:0", "-ss", str(at), "-frames:v", "1", "-update", "1",
+                       str(still)], 600)
                 with Image.open(still) as frame:
                     frame.convert("RGB").save(still.with_suffix(".jpg"), quality=85)
                 still.unlink()
         except Exception as exc:                  # a survey must not stop the trial
-            found.setdefault(key, {})["error"] = type(exc).__name__
+            found.setdefault(key, {})["error"] = (str(exc) if isinstance(exc, RuntimeError)
+                                                  else type(exc).__name__)
         print(f"Source {key}:", {k: found[key].get(k) for k in
               ("codec_name", "width", "height", "avg_frame_rate", "bit_rate", "duration", "error")},
               flush=True)

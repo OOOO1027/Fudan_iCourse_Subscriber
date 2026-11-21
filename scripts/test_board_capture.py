@@ -80,7 +80,8 @@ def recall(page, board_box, chalk):
     got = np.zeros((H, W), bool)
     x0, y0, x1, y1 = page.rect
     got[y0:y1, x0:x1] = np.asarray(page.image.convert("L")) > 150
-    got = np.asarray(Image.fromarray(got).filter(ImageFilter.MaxFilter(3)))
+    # page.rect is where the board was to the nearest 4-px block
+    got = np.asarray(Image.fromarray(got).filter(ImageFilter.MaxFilter(7)))
     return (truth & got).sum() / max(truth.sum(), 1)
 
 
