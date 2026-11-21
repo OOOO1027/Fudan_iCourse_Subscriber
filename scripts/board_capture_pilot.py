@@ -100,8 +100,13 @@ def probe(url, headers):
     return {**data["format"], **data["streams"][0]}
 
 
-def survey_sources(client, directory):
-    """What each listed replay source is: its format and two stills."""
+def survey_sources(client):
+    """The format of each listed replay source.
+
+    Stills taken on 2026-11-21 showed that of the two sources of this lecture
+    hall the first (type 3) faces the boards and the second (type 4) faces the
+    audience, so only the first is read and no stills are kept.
+    """
     def listed():
         info = client.get_sub_info(COURSE, SUB)
         now = info.get("now")
@@ -109,30 +114,16 @@ def survey_sources(client, directory):
         return {key: (entry.get("preview_url"), now)
                 for key, entry in (info.get("video_list") or {}).items() if isinstance(entry, dict)}
 
-    def fresh(key):
-        # A signed URL is refused on its second request: sign again for every one.
-        base, now = listed()[key]
-        return client.get_stream_params(client.sign_video_url(base, now=now))
-
     found = {}
     for key, (base, _) in listed().items():
         if not (isinstance(base, str) and base.endswith(".mp4")):
             continue
         try:
-            found[key] = probe(*fresh(key))
-            for at in (300, 3600):
-                url, headers = fresh(key)
-                still = directory / f"source-{key}-{at:05d}s.png"
-                # PNG: ffmpeg refuses limited-range video as JPEG.
-                quiet(["ffmpeg", "-nostdin", "-y", "-headers", headers, *RECONNECT, "-i", url,
-                       "-map", "0:v:0", "-ss", str(at), "-frames:v", "1", "-update", "1",
-                       str(still)], 600)
-                with Image.open(still) as frame:
-                    frame.convert("RGB").save(still.with_suffix(".jpg"), quality=85)
-                still.unlink()
+            # A signed URL is refused on its second request: sign again for every one.
+            base, now = listed()[key]
+            found[key] = probe(*client.get_stream_params(client.sign_video_url(base, now=now)))
         except Exception as exc:                  # a survey must not stop the trial
-            found.setdefault(key, {})["error"] = (str(exc) if isinstance(exc, RuntimeError)
-                                                  else type(exc).__name__)
+            found[key] = {"error": str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__}
         print(f"Source {key}:", {k: found[key].get(k) for k in
               ("codec_name", "width", "height", "avg_frame_rate", "bit_rate", "duration", "error")},
               flush=True)
@@ -239,8 +230,7 @@ def main():
             tempfile.TemporaryDirectory(prefix="board-review-") as review:
         review = Path(review)
         try:
-            (review / "sources").mkdir()
-            survey = survey_sources(client, review / "sources")
+            survey = survey_sources(client)
             t0 = time.time()
             times, paths, restarts = sample_frames(client, Path(scratch), duration)
             t_sample = time.time() - t0

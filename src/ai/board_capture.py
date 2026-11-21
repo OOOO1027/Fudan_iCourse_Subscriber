@@ -546,7 +546,13 @@ class BoardExtractor:
         page.first_ms = (big or page.segments)[0]["start_ms"]
 
     def _absorb(self, pages: list[Page]) -> list[Page]:
-        """Drop a page whose chalk another page shows at some vertical offset."""
+        """Drop a page whose chalk another page shows, block for block.
+
+        Handwriting is never repeated that exactly, so this is the same chalk:
+        an earlier state of the board, a view of it after it was slid, or a
+        board read wrongly mid-slide.  The match is corrected for what a
+        densely written page gives by chance.
+        """
         wb = self.F.shape[2]
         wide = []
         for p in pages:
@@ -554,34 +560,29 @@ class BoardExtractor:
             row = np.zeros((p.occ.shape[0], wb), bool)
             row[:, x0:x0 + p.occ.shape[1]] = p.occ
             wide.append(row)
+        grown = [_morph(row, 3, grow=True) for row in wide]
         gone: dict[int, int] = {}
         order = sorted(range(len(pages)), key=lambda k: pages[k].ink_blocks)
         for a in order:                         # smallest first: it is the partial view
             A, na = wide[a], pages[a].ink_blocks
+            cols = np.flatnonzero(A.any(axis=0))
             best = (0.0, None, 0)
-            # Chalk written after this page's content was gone cannot be the same chalk.
-            limit = (len(self.times) if pages[a].lost_ms is None
-                     else self.times.index(pages[a].lost_ms)) + self._samples(30)
             for b in range(len(pages)):
                 if b == a or b in gone or pages[b].ink_blocks < 0.9 * na:
                     continue
-                pb = pages[b]
-                x0 = pb.rect[0] // BLOCK
-                # Chalk that is back on the same sheet in the same place was never
-                # wiped: a board read wrongly while it was being slid.
-                again = pb.sheet == pages[a].sheet
-                B = np.zeros((pb.occ.shape[0], wb), bool)
-                B[:, x0:x0 + pb.occ.shape[1]] = pb.occ if again else pb.occ & (pb.seen <= limit)
-                B = _morph(B, 3, grow=True)
+                B = grown[b]
                 ha, hb = A.shape[0], B.shape[0]
-                at = pages[a].origin[0] - pb.origin[0]
-                for dy in ([at] if again else range(-ha + 1, hb)):   # A's row 0 sits on B's row dy
+                same = pages[b].sheet == pages[a].sheet
+                at = pages[a].origin[0] - pages[b].origin[0]
+                for dy in ([at] if same else range(-ha + 1, hb)):   # A's row 0 sits on B's row dy
                     lo, hi = max(0, dy), min(hb, dy + ha)
                     if lo >= hi:
                         continue
                     hit = (A[lo - dy:hi - dy] & B[lo:hi]).sum() / na
                     if hit > best[0]:
-                        best = (hit, b, dy)
+                        chance = B[lo:hi, cols[0]:cols[-1] + 1].mean()
+                        if hit - chance >= 0.8 * (1 - chance):
+                            best = (hit, b, dy)
             if best[0] >= 0.9:
                 gone[a] = best[1]
                 self._inherit(pages[a], pages[best[1]], best[2], best[0])
