@@ -104,11 +104,15 @@ def survey_sources(client, directory):
         try:
             url, headers = client.get_stream_params(client.sign_video_url(base, now=now))
             found[key] = probe(url, headers)
-            # Seeking on the input failed through the gateway, so decode up to each still.
+            # Decode up to each still (seeking on the input is untested through the
+            # gateway) and write PNG: ffmpeg refuses limited-range video as JPEG.
             for at in (300, 3600):
+                still = directory / f"source-{key}-{at:05d}s.png"
                 quiet(["ffmpeg", "-nostdin", "-y", "-headers", headers, *RECONNECT, "-i", url,
-                       "-ss", str(at), "-frames:v", "1", "-q:v", "3",
-                       str(directory / f"source-{key}-{at:05d}s.jpg")], 600)
+                       "-ss", str(at), "-frames:v", "1", str(still)], 600)
+                with Image.open(still) as frame:
+                    frame.convert("RGB").save(still.with_suffix(".jpg"), quality=85)
+                still.unlink()
         except Exception as exc:                  # a survey must not stop the trial
             found.setdefault(key, {})["error"] = type(exc).__name__
         print(f"Source {key}:", {k: found[key].get(k) for k in
@@ -265,8 +269,9 @@ def main():
             # Whatever was produced before a failure is still worth reviewing.
             size = encrypt_bundle(review, output / "bundle.bin")
 
-    print(f"Pages: {len(pages)} (from {report['candidates']} candidates, {len(report['wipes'])} wipes); "
-          f"coverage {report['coverage']['share']}; dropped blocks {report['dropped_blocks']}", flush=True)
+    print(f"Pages: {len(pages)} (from {report['candidates']} candidates, {report['sheets']} sheets, "
+          f"{report['slides']} slides); coverage {report['coverage']['share']}; "
+          f"dropped blocks {report['dropped_blocks']}", flush=True)
     for k, page in enumerate(pages):
         end = "end" if page.lost_ms is None else clock(page.lost_ms)
         print(f"  #{k + 1:02d} {clock(page.first_ms)}-{clock(page.last_ms)} gone {end} "

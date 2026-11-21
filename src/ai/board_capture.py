@@ -1,22 +1,25 @@
 """Blackboard pages from sampled lecture frames (fixed camera, green boards).
 
-Chalk on a board only accumulates until it is wiped, slid away or covered, so
-one image taken just before each such loss holds everything written since the
-previous one.  The extractor therefore looks for losses, not for changes:
+Chalk on a board only accumulates until it is wiped, so one image taken just
+before each wipe holds everything written since the previous one.  Boards in
+a lecture hall slide up and down and pass behind each other, so chalk is
+tracked on sheets: one per physical board, in coordinates that move with it.
 
-  1. per frame: a board mask and a chalk mask, reduced to 4x4-px blocks;
-  2. per block: a debounced "chalk present" state.  A block that is not
-     visible (teacher, projection screen, bare wall) keeps its last state;
-  3. losses close in time form one wipe.  Each board panel it touches yields
-     one page, composed per tile from the frame that shows most of the tile's
-     chalk with nothing in front of it;
-  4. a page whose chalk reappears in another page at a different height (the
-     board was slid, not wiped) is absorbed by that page.
+  1. per frame: a board mask and a chalk mask, reduced to 4x4-px blocks, and
+     the visible panels (columns of board, split at the frames between them);
+  2. each panel is matched to a sheet: the one already on it while its chalk
+     is still there, else a sheet whose chalk fits at some vertical offset
+     (the board was slid), else a new sheet;
+  3. per sheet and block: a debounced "chalk present" state.  Blocks hidden
+     by the teacher, the projection screen or another board keep their state;
+  4. a sheet yields a page when chalk leaves it - wiped in place, or the
+     sheet is never recognised again - and one for what is left at the end.
+     A page is composed per tile from the frames that show most of the
+     tile's chalk with nothing in front of it;
+  5. a page whose chalk is all on another page is absorbed by it.
 
-Panels are not configured: they come from an XY-cut of the board mask at the
-time the content was last seen, so sliding boards and other rooms need no
-calibration.  Frames are not kept in memory; ``load_frame(i)`` must return
-sample ``i`` again when a page is composed.
+Nothing is calibrated to a room.  Frames are not kept in memory;
+``load_frame(i)`` must return sample ``i`` again when a page is composed.
 """
 
 from __future__ import annotations
@@ -33,7 +36,9 @@ HUE = (67, 147)           # PIL hue units, 95-208 degrees: dim green to lit teal
 SAT_MIN = 21
 VAL = (31, 214)
 INK_LO, INK_HI = 5, 9     # gray levels above the local background
-BRD, LO, HI, ST = 1, 2, 4, 8
+BRD, LO, HI = 1, 2, 4
+PAD = 140                 # blocks a sheet may travel from where it was first seen
+MIN_REG = 30              # chalk blocks needed to recognise a sheet
 
 
 def frame_features(rgb: np.ndarray) -> np.ndarray:
@@ -79,48 +84,132 @@ def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(edges[::2].tolist(), edges[1::2].tolist()))
 
 
-def xy_cut(mask: np.ndarray, min_w: int = 24, min_h: int = 12) -> list[tuple]:
-    """Axis-aligned panels (x0, y0, x1, y1) of a block mask."""
+def panels(board: np.ndarray, columns: np.ndarray, min_w: int = 24, min_h: int = 12) -> list[tuple]:
+    """Visible panels (x0, y0, x1, y1): columns of board, split at the frames between panels.
+
+    `columns` is the board mask of the last minute or so: someone standing in
+    front of a panel must not split its column in two.
+    """
     out = []
-
-    def cut(x0, y0, x1, y1, axis):
-        sub = mask[y0:y1, x0:x1]
-        for step in range(2):
-            ax = (axis + step) % 2            # 0: split along x, 1: along y
-            line = sub.sum(axis=ax)
-            if not line.max():
-                return
-            parts = _runs(line >= 0.3 * line.max())
-            if len(parts) > 1 or parts[0] != (0, len(line)):
-                for a, b in parts:
-                    if ax == 0:
-                        cut(x0 + a, y0, x0 + b, y1, 1)
-                    else:
-                        cut(x0, y0 + a, x1, y0 + b, 0)
-                return
-        if x1 - x0 >= min_w and y1 - y0 >= min_h and sub.mean() >= 0.5:
-            out.append((x0, y0, x1, y1))
-
-    cut(0, 0, mask.shape[1], mask.shape[0], 0)
+    for x0, x1 in _runs(columns.sum(axis=0) >= min_h):
+        if x1 - x0 < min_w:
+            continue
+        rows = board[:, x0:x1].sum(axis=1)
+        for y0, y1 in _runs(rows >= 0.3 * (x1 - x0)):
+            if y1 - y0 >= min_h and board[y0:y1, x0:x1].mean() >= 0.5:
+                out.append((x0, y0, x1, y1))
     return out
+
+
+def _overlap(a0, a1, b0, b1) -> float:
+    """Shared length of two intervals as a share of the shorter one."""
+    return max(0, min(a1, b1) - max(a0, b0)) / max(1, min(a1 - a0, b1 - b0))
+
+
+class _Sheet:
+    """Chalk on one physical board, in rows that move with the board."""
+
+    def __init__(self, shape):
+        self.rows = shape[0] + 2 * PAD
+        self.state = np.zeros((self.rows, shape[1]), bool)
+        self.cnt = np.zeros((self.rows, shape[1]), np.uint8)
+        self.last = np.zeros((self.rows, shape[1]), np.int32)   # sample the chalk was last seen
+        self.born = np.zeros((self.rows, shape[1]), np.int32)   # sample it appeared
+        self.offset = -PAD            # frame row of sheet row 0
+        self.pos: dict[int, int] = {}
+        self.vis: dict[int, tuple] = {}   # sample -> its panel in sheet coordinates (r0, c0, r1, c1)
+        self.events: list[tuple] = []     # (sample, rows, cols, last, born) of chalk that went away
+        self.grown = np.zeros((self.rows, shape[1]), bool)      # state, one block wider
+        self.ink = 0
+        self.seen = -1
+        self.moves = 0
+
+    def frame_rect(self) -> tuple:
+        r0, c0, r1, c1 = self.vis[self.seen]
+        return c0, r0 + self.offset, c1, r1 + self.offset
+
+    def agree(self, obs, ink, near, seg, offset, need):
+        """How well the panel's chalk and this sheet's agree at `offset`, both ways.
+
+        Each way is the share of one side's chalk found next to the other's,
+        rescaled so that 0 is what a densely written board gives by chance.
+        """
+        x0, y0, x1, y1 = seg
+        r0, r1 = y0 - offset, y1 - offset
+        if r0 < 0 or r1 > self.rows:
+            return None
+        mine = self.state[r0:r1, x0:x1] & obs
+        n, area = int(mine.sum()), int(obs.sum())
+        if n < need:
+            return None
+        theirs = ink & obs
+        m = int(theirs.sum())
+        if not m:
+            return 0.0
+        grown = self.grown[r0:r1, x0:x1] & obs
+        found, chance = (mine & near).sum() / n, (near & obs).sum() / area
+        back, back_chance = (theirs & grown).sum() / m, grown.sum() / area
+        return float(min((found - chance) / max(1 - chance, 1e-6),
+                         (back - back_chance) / max(1 - back_chance, 1e-6)))
+
+    def search(self, obs, ink, near, seg, need):
+        """Best (agreement, offset) over vertical offsets, nearest to the current one on ties."""
+        x0, y0, x1, y1 = seg
+        rows = np.flatnonzero(self.state[:, x0:x1].any(axis=1))
+        best = (0.0, None)
+        if len(rows):
+            offsets = range(y0 - int(rows[-1]), y1 - int(rows[0]))
+            for off in sorted(offsets, key=lambda o: abs(o - self.offset)):
+                s = self.agree(obs, ink, near, seg, off, need)
+                if s is not None and s > best[0]:
+                    best = (s, off)
+        return best
+
+    def update(self, i, seg, offset, obs, hi, near, confirm):
+        x0, y0, x1, y1 = seg
+        if self.pos and offset != self.offset:
+            self.moves += 1
+        r0, r1 = y0 - offset, y1 - offset
+        sl = (slice(r0, r1), slice(x0, x1))
+        state, cnt = self.state[sl], self.cnt[sl]
+        # Chalk counts as gone only if nothing is left next to it either: after a
+        # slide the board rarely lands on the same 4-px grid.
+        contra = obs & np.where(state, ~near, hi)
+        cnt[...] = np.where(contra, np.minimum(cnt, 250) + 1, np.where(obs, 0, cnt))
+        flip = cnt >= confirm
+        if flip.any():
+            off = flip & state
+            if off.any():
+                ys, xs = np.nonzero(off)
+                self.events.append((i, ys + r0, xs + x0, self.last[sl][ys, xs], self.born[sl][ys, xs]))
+            self.born[sl][flip & ~state] = max(0, i - confirm + 1)
+            state ^= flip
+            cnt[flip] = 0
+            self.ink = int(self.state.sum())
+            self.grown = _morph(self.state, 3, grow=True)
+        self.last[sl][obs & near & state] = i
+        self.offset, self.seen = offset, i
+        self.pos[i], self.vis[i] = offset, (r0, x0, r1, x1)
 
 
 @dataclass
 class Page:
-    rect: tuple            # x0, y0, x1, y1 in pixels
-    first_ms: int          # earliest chalk on the page
+    rect: tuple            # x0, y0, x1, y1 in frame pixels when the content was last seen
+    first_ms: int          # when its first sizeable burst of chalk appeared
     last_ms: int           # last time its content was seen intact
-    lost_ms: int | None    # when the loss was confirmed; None: still there at the end
-    image: Image.Image
-    segments: list         # [{"start_ms", "end_ms", "box"}], box in page pixels
+    lost_ms: int | None    # when it was found gone; None: still there at the end
+    image: Image.Image | None
+    segments: list         # [{"start_ms", "end_ms", "tiles", "box"}], box in page pixels
     ink_blocks: int
     uncaptured: float      # share of chalk blocks no unobstructed frame showed
-    absorbed: list = field(default_factory=list)   # earlier views of this content
+    absorbed: list = field(default_factory=list)   # other views of this content
     # block-level bookkeeping, not part of the output
     occ: np.ndarray = field(default=None, repr=False)
     born: np.ndarray = field(default=None, repr=False)    # may inherit earlier times
-    seen: np.ndarray = field(default=None, repr=False)    # when chalk appeared at this place
+    seen: np.ndarray = field(default=None, repr=False)    # when the chalk appeared on this sheet
     ref: int = 0
+    sheet: int = 0
+    origin: tuple = (0, 0)   # sheet row and column of the page's top-left block
 
     def meta(self) -> dict:
         return {"rect": list(self.rect), "first_ms": self.first_ms,
@@ -130,7 +219,7 @@ class Page:
 
 
 class BoardExtractor:
-    def __init__(self, load_frame: Callable[[int], np.ndarray], confirm: int = 2,
+    def __init__(self, load_frame: Callable[[int], np.ndarray] | None = None, confirm: int = 2,
                  min_blocks: int = 40, margin: int = 3):
         self.load_frame = load_frame
         self.confirm = confirm          # contradicting observations before a block flips
@@ -138,176 +227,231 @@ class BoardExtractor:
         self.margin = margin            # blocks kept clear of anything that is not board
         self.times: list[int] = []
         self.feats: list[np.ndarray] = []
-        self.events: list[tuple] = []   # (sample, ys, xs, last, born) of blocks that lost chalk
-        self.state = None
+        self.sheets: list[_Sheet] = []
+        self.pending: list[tuple] = []  # panels no sheet claimed, with how long they have stayed
+        self.recent: list[np.ndarray] = []   # board masks of the last minute
 
-    # ── passes 1 and 2, one sample at a time ────────────────────────────
+    # ── per sample ──────────────────────────────────────────────────────
     def add(self, rgb: np.ndarray, t_ms: int) -> None:
-        f = frame_features(rgb)
-        if self.state is None:
-            self.shape = rgb.shape[:2]
-            self.state = np.zeros(f.shape, bool)
-            self.cnt = np.zeros(f.shape, np.uint8)
-            self.last = np.zeros(f.shape, np.int32)
-            self.born = np.zeros(f.shape, np.int32)
+        self.shape = rgb.shape[:2]
+        self.add_features(frame_features(rgb), t_ms)
+
+    def add_features(self, f: np.ndarray, t_ms: int) -> None:
         i = len(self.times)
+        brd = (f & BRD) > 0
         obs = self._observable(f)
-        lo, hi = (f & LO) > 0, (f & HI) > 0
-        contra = obs & np.where(self.state, ~lo, hi)
-        self.cnt = np.where(contra, np.minimum(self.cnt, 250) + 1,
-                            np.where(obs, 0, self.cnt)).astype(np.uint8)
-        flip = self.cnt >= self.confirm
-        if flip.any():
-            off = flip & self.state
-            if off.any():
-                ys, xs = np.nonzero(off)
-                self.events.append((i, ys, xs, self.last[ys, xs], self.born[ys, xs]))
-                # A tile that lost most of its chalk at once was swapped for
-                # other content: chalk still in it is new, not a survivor.
-                before, gone = _tile_sum(self.state), _tile_sum(off)
-                swapped = np.repeat(np.repeat((gone >= 0.35 * before) & (before >= 4), TILE, 0),
-                                    TILE, 1)[:f.shape[0], :f.shape[1]]
-                rest = swapped & self.state & ~flip
-                if rest.any():
-                    ys, xs = np.nonzero(rest)
-                    self.events.append((i, ys, xs, np.minimum(self.last[ys, xs], i - self.confirm),
-                                        self.born[ys, xs]))
-                    self.born[rest] = max(0, i - self.confirm + 1)
-            self.born[flip & ~self.state] = max(0, i - self.confirm + 1)
-            self.state ^= flip
-            self.cnt[flip] = 0
-        self.last[obs & lo & self.state] = i
-        self.feats.append(f | (self.state * ST).astype(np.uint8))
+        hi, lo = (f & HI) > 0, (f & LO) > 0
+        near = _morph(lo, 3, grow=True)
+        self.recent = (self.recent + [brd])[-12:]
+        free = dict(enumerate(panels(brd, np.any(self.recent, axis=0))))
+
+        def crop(a, seg):
+            return a[seg[1]:seg[3], seg[0]:seg[2]]
+
+        def assign(sheet, g, offset):
+            seg = free.pop(g)
+            sheet.update(i, seg, offset, crop(obs, seg), crop(hi, seg), crop(near, seg), self.confirm)
+
+        # The sheet that was on a panel stays on it while its chalk is still there.
+        for s in self.sheets:
+            if s.seen < i - 3:
+                continue
+            fx0, fy0, fx1, fy1 = s.frame_rect()
+            here = [(_overlap(seg[1], seg[3], fy0, fy1), g) for g, seg in free.items()
+                    if _overlap(seg[0], seg[2], fx0, fx1) >= 0.5]
+            if not here or max(here)[0] < 0.5:
+                continue
+            g = max(here)[1]
+            seg = free[g]
+            sc = s.agree(crop(obs, seg), crop(lo, seg), crop(near, seg), seg, s.offset, MIN_REG)
+            unmoved = abs(seg[1] - fy0) <= 2 and abs(seg[3] - fy1) <= 2
+            if (sc is not None and sc >= 0.5) or (sc is None and unmoved):
+                assign(s, g, s.offset)
+
+        # A panel with chalk that no sheet claimed: was a known board slid here?
+        idle = [s for s in self.sheets if s.seen != i and s.ink >= MIN_REG]
+        found = []
+        for g, seg in free.items():
+            if crop(hi & obs, seg).sum() < self.min_blocks:
+                continue
+            for k, s in enumerate(idle):
+                c0, c1 = s.vis[s.seen][1], s.vis[s.seen][3]
+                if _overlap(seg[0], seg[2], c0, c1) < 0.5:
+                    continue
+                score, offset = s.search(crop(obs, seg), crop(lo, seg), crop(near, seg), seg,
+                                         max(MIN_REG, 0.3 * s.ink))
+                if score >= 0.6:
+                    found.append((score, g, k, offset))
+        for score, g, k, offset in sorted(found, reverse=True):
+            if g in free and idle[k].seen != i:
+                assign(idle[k], g, offset)
+
+        # Whatever else stays put for two samples is a board not met before.
+        pending = []
+        for g, seg in list(free.items()):
+            count = 1 + max((c for old, c in self.pending
+                             if abs(old[1] - seg[1]) <= 2 and abs(old[3] - seg[3]) <= 2
+                             and _overlap(old[0], old[2], seg[0], seg[2]) >= 0.5), default=0)
+            if count >= 2:
+                self.sheets.append(_Sheet(f.shape))
+                assign(self.sheets[-1], g, -PAD)
+            else:
+                pending.append((seg, count))
+        self.pending = pending
+        self.sheets = [s for s in self.sheets if s.ink or s.events or s.seen >= i - 3]
+        self.feats.append(f)
         self.times.append(int(t_ms))
 
     def _observable(self, f: np.ndarray) -> np.ndarray:
         return _morph((f & BRD) > 0, 2 * self.margin + 1, grow=False)
 
-    # ── passes 3 and 4 ──────────────────────────────────────────────────
-    def finish(self) -> tuple[list[Page], dict]:
+    # ── at the end ──────────────────────────────────────────────────────
+    def finish(self, images: bool = True) -> tuple[list[Page], dict]:
         n = len(self.times)
         if n < 2:
-            return [], {"samples": n, "pages": 0}
+            return [], {"samples": n, "pages": 0, "candidates": 0, "sheets": 0,
+                        "coverage": {"share": None}}
         self.F = np.stack(self.feats)
         self.feats = []
         self.dt = float(np.median(np.diff(self.times)))
         self.dropped = 0
         self._cache: dict[int, np.ndarray] = {}
         pages: list[Page] = []
-
-        count = np.zeros(n)
-        for i, ys, *_ in self.events:
-            count[i] += len(ys)
-        win = self._samples(15)
-        active = np.convolve(count, np.ones(2 * win + 1), "same") >= self.min_blocks
-        runs = _runs(active)
-        merged = []
-        for a, b in runs:
-            if merged and a - merged[-1][1] <= self._samples(45):
-                merged[-1] = (merged[-1][0], b)
-            else:
-                merged.append((a, b))
-        wipes = []
-        for a, b in merged:
-            ev = [e for e in self.events if a <= e[0] < b]
-            ys, xs, last, born = (np.concatenate([e[k] for e in ev]) for k in (1, 2, 3, 4))
-            _, keep = np.unique(ys * self.F.shape[2] + xs, return_index=True)
-            made = self._pages(ys[keep], xs[keep], last[keep], born[keep], self.times[ev[0][0]])
-            wipes.append({"start_ms": self.times[ev[0][0]], "end_ms": self.times[ev[-1][0]],
-                          "blocks": len(keep), "pages": len(made)})
-            pages += made
-        self.dropped += int(count[~active].sum())
-        ys, xs = np.nonzero(self.state)
-        pages += self._pages(ys, xs, self.last[ys, xs], self.born[ys, xs], None)
-
+        for k, s in enumerate(self.sheets):
+            pages += self._sheet_pages(k, s, images)
         pages.sort(key=lambda p: (p.ref, p.rect))
+        coverage = self._audit(pages)
         kept = self._absorb(pages)
         report = {"samples": n, "interval_s": round(self.dt / 1000, 2),
-                  "frame": list(self.shape), "pages": len(kept),
-                  "candidates": len(pages), "wipes": wipes,
-                  "dropped_blocks": self.dropped, "coverage": self._audit(pages)}
+                  "frame": [v * BLOCK for v in self.F.shape[1:]], "pages": len(kept),
+                  "candidates": len(pages),
+                  "sheets": sum(1 for s in self.sheets if s.ink or s.events),
+                  "slides": sum(s.moves for s in self.sheets),
+                  "dropped_blocks": self.dropped, "coverage": coverage}
         self._cache = {}
         return kept, report
 
     def _samples(self, seconds: float) -> int:
         return max(1, round(seconds * 1000 / self.dt))
 
-    def _pages(self, ys, xs, last, born, lost_ms) -> list[Page]:
-        """One page per panel for chalk blocks lost together (or left at the end)."""
-        pages = []
-        if not len(ys):
-            return pages
-        order = np.argsort(last, kind="stable")
-        ys, xs, last, born = ys[order], xs[order], last[order], born[order]
-        # Content hidden long before it was found gone belongs to an earlier layout.
-        bounds = np.flatnonzero(np.diff(last) > self._samples(120)) + 1
-        for g in np.split(np.arange(len(ys)), bounds):
-            if len(g) < self.min_blocks:
-                self.dropped += len(g)
+    def _sheet_pages(self, k: int, s: _Sheet, images: bool) -> list[Page]:
+        """Pages of one sheet: one per wipe, one for what it still holds."""
+        n = len(self.times)
+        if len(s.pos) < self._samples(30):
+            # Seen for a few seconds only: a board caught mid-slide, not content of its own.
+            self.dropped += s.ink
+            return []
+        losses = []                      # [rows, cols, last, born, first sample, last sample]
+        if s.events:
+            count = np.zeros(n)
+            for e in s.events:
+                count[e[0]] += len(e[1])
+            win = self._samples(15)
+            active = np.convolve(count, np.ones(2 * win + 1), "same") >= self.min_blocks
+            for a, b in _runs(active):
+                if losses and a - losses[-1][5] <= self._samples(45):
+                    a = losses.pop()[4]
+                ev = [e for e in s.events if a <= e[0] < b]
+                losses.append([*(np.concatenate([e[j] for e in ev]) for j in (1, 2, 3, 4)),
+                               ev[0][0], ev[-1][0]])
+            self.dropped += int(count[~active].sum())
+        ys, xs = np.nonzero(s.state)
+        if len(ys):
+            # Not recognised again: wiped, or hidden until the end.
+            gone = s.seen + 1 if s.seen < n - 1 - self._samples(20) else None
+            rest = [ys, xs, s.last[ys, xs], s.born[ys, xs], gone, gone]
+            if gone is not None and losses and gone - losses[-1][5] <= self._samples(45):
+                # the same wipe went on after the sheet stopped being recognisable
+                prev = losses.pop()
+                rest = [*(np.concatenate([prev[j], rest[j]]) for j in range(4)), prev[4], gone]
+            losses.append(rest)
+        out = []
+        for ys, xs, last, born, lost, _ in losses:
+            _, first = np.unique(ys * s.state.shape[1] + xs, return_index=True)
+            if len(first) < self.min_blocks:
+                self.dropped += len(first)
                 continue
-            ref = int(last[g].max())
-            layout = (self.F[max(0, ref - self._samples(60)):ref + 1] & BRD).any(axis=0)
-            used = np.zeros(len(g), bool)
-            for x0, y0, x1, y1 in xy_cut(layout):
-                inside = (xs[g] >= x0) & (xs[g] < x1) & (ys[g] >= y0) & (ys[g] < y1)
-                if inside.sum() < self.min_blocks:
-                    continue
-                used |= inside
-                m = g[inside]
-                pages.append(self._compose((x0, y0, x1, y1), ref, layout, ys[m], xs[m],
-                                           last[m], born[m], lost_ms))
-            self.dropped += int((~used).sum())
-        return pages
+            out.append(self._compose(k, s, ys[first], xs[first], last[first], born[first],
+                                     None if lost is None else self.times[min(lost, n - 1)], images))
+        return out
 
-    def _compose(self, rect, ref, layout, ys, xs, last, born, lost_ms) -> Page:
-        x0, y0, x1, y1 = rect
-        h, w = y1 - y0, x1 - x0
-        alive = (self.F[ref, y0:y1, x0:x1] & ST) > 0
-        # Sample at which each block that still holds chalk at `ref` got it.
-        hist = (self.F[:ref + 1, y0:y1, x0:x1] & ST) > 0
-        since = ref + 1 - np.argmax(~hist[::-1], axis=0)
-        since[hist.all(axis=0)] = 0
-        b0 = np.where(alive, np.maximum(since - self.confirm + 1, 0), -1)
-        b1 = np.where(alive, ref, -1)           # last sample known to show the chalk
-        b0[ys - y0, xs - x0], b1[ys - y0, xs - x0] = born, last
+    def _compose(self, k, s, ys, xs, last, born, lost_ms, images) -> Page:
+        ref = int(last.max())
+        # Chalk on the sheet at `ref`: what it still holds, what went later, what goes now.
+        b0 = np.full(s.state.shape, -1, np.int32)     # sample the chalk appeared
+        b1 = b0.copy()                                # last sample known to show it
+        alive = s.state & (s.born <= ref)
+        b0[alive], b1[alive] = s.born[alive], ref
+        for i, eys, exs, _, eborn in s.events:
+            if i > ref:
+                then = eborn <= ref
+                b0[eys[then], exs[then]], b1[eys[then], exs[then]] = eborn[then], ref
+        b0[ys, xs], b1[ys, xs] = born, last
+
+        # The board's extent: rows and columns its panel covered in a fair share of its samples.
+        seen = [t for t in s.vis if t <= ref]
+        rows, cols = np.zeros(s.state.shape[0], int), np.zeros(s.state.shape[1], int)
+        for t in seen:
+            r0, c0, r1, c1 = s.vis[t]
+            rows[r0:r1] += 1
+            cols[c0:c1] += 1
+        need = max(2, 0.1 * len(seen))
+        rr, cc = np.flatnonzero(rows >= need), np.flatnonzero(cols >= need)
+        if not len(rr) or not len(cc):
+            rr, cc = np.flatnonzero(rows), np.flatnonzero(cols)
+        r0, r1, c0, c1 = int(rr[0]), int(rr[-1]) + 1, int(cc[0]), int(cc[-1]) + 1
+        h, w = r1 - r0, c1 - c0
+        b0, b1 = b0[r0:r1, c0:c1], b1[r0:r1, c0:c1]
         occ = b0 >= 0
 
-        lookback = self._samples(300)
-        cand = np.arange(max(0, ref - lookback), ref + 1)
-        brd = (self.F[cand[0]:ref + 1] & BRD) > 0
+        # Candidate samples: the recent ones densely, older ones sparsely.
+        seen.sort()
+        cand = np.array(sorted(set(seen[-120:]) | set(seen[:-120][::6])))
+        hb = self.F.shape[1]
+        brd = np.zeros((len(cand), h, w), bool)       # board, where this sheet's panel was
+        for j, t in enumerate(cand):
+            p = s.pos[t]
+            vr0, vc0, vr1, vc1 = s.vis[t]
+            a0, a1 = max(r0, vr0, -p), min(r1, vr1, hb - p)
+            x0, x1 = max(c0, vc0), min(c1, vc1)
+            if a0 < a1 and x0 < x1:
+                brd[j, a0 - r0:a1 - r0, x0 - c0:x1 - c0] = (self.F[t, a0 + p:a1 + p, x0:x1] & BRD) > 0
         # Blocks on a panel's rim flicker between board and not; only the
         # interior tells whether something stands in front of a tile.
-        core = _morph(layout, 5, grow=False)
-        image = Image.new("RGB", (w * BLOCK, h * BLOCK))
+        core = _morph(brd.mean(axis=0) >= 0.5, 5, grow=False)
+        image = Image.new("RGB", (w * BLOCK, h * BLOCK)) if images else None
         picks: dict[int, list] = {}
         captured = 0
         for ty in range(0, h, TILE):
             for tx in range(0, w, TILE):
                 sl = (slice(ty, min(ty + TILE, h)), slice(tx, min(tx + TILE, w)))
                 a, b = b0[sl][occ[sl]], b1[sl][occ[sl]]
-                ay0, ay1 = max(y0 + ty - 2, 0), y0 + ty + TILE + 2
-                ax0, ax1 = max(x0 + tx - 2, 0), x0 + tx + TILE + 2
-                clear = ~(core[ay0:ay1, ax0:ax1] & ~brd[:, ay0:ay1, ax0:ax1]).any(axis=(1, 2))
+                wide = (slice(max(ty - 2, 0), ty + TILE + 2), slice(max(tx - 2, 0), tx + TILE + 2))
+                blocked = (core[wide] & ~brd[(slice(None), *wide)]).any(axis=(1, 2))
+                clear = ~blocked & (brd[(slice(None), *sl)].mean(axis=(1, 2)) >= 0.5)
                 shown = ((a[None, :] <= cand[:, None]) & (cand[:, None] <= b[None, :])).sum(axis=1)
                 score = np.where(clear, shown, -1)
                 best = len(cand) - 1 - int(np.argmax(score[::-1]))   # latest of the best
                 if score[best] < 0:
-                    best = len(cand) - 1                              # never unobstructed
+                    best = int(np.searchsorted(cand, ref))            # never unobstructed
                 else:
                     captured += int(score[best])
                 picks.setdefault(int(cand[best]), []).append(sl)
-        for idx, tiles in picks.items():
-            frame = self._frame(idx)
-            for sy, sx in tiles:
-                box = ((x0 + sx.start) * BLOCK, (y0 + sy.start) * BLOCK,
-                       (x0 + sx.stop) * BLOCK, (y0 + sy.stop) * BLOCK)
-                image.paste(Image.fromarray(frame[box[1]:box[3], box[0]:box[2]]),
-                            (sx.start * BLOCK, sy.start * BLOCK))
+        if images:
+            for t, tiles in picks.items():
+                frame, p = self._frame(t), s.pos[t]
+                for sy, sx in tiles:
+                    top = (r0 + sy.start + p) * BLOCK
+                    left = (c0 + sx.start) * BLOCK
+                    piece = frame[max(top, 0):top + (sy.stop - sy.start) * BLOCK,
+                                  left:left + (sx.stop - sx.start) * BLOCK]
+                    image.paste(Image.fromarray(piece), (sx.start * BLOCK, sy.start * BLOCK))
         total = int(occ.sum())
-        page = Page(rect=tuple(v * BLOCK for v in rect), first_ms=0,
+        p = s.pos[ref]
+        page = Page(rect=(c0 * BLOCK, (r0 + p) * BLOCK, c1 * BLOCK, (r1 + p) * BLOCK), first_ms=0,
                     last_ms=self.times[ref], lost_ms=lost_ms, image=image, segments=[],
                     ink_blocks=total, uncaptured=1 - captured / max(total, 1),
-                    occ=occ, born=b0, seen=b0.copy(), ref=ref)
+                    occ=occ, born=b0, seen=b0.copy(), ref=ref, sheet=k, origin=(r0, c0))
         self._timeline(page)
         return page
 
@@ -364,26 +508,19 @@ class BoardExtractor:
         for a in order:                         # smallest first: it is the partial view
             A, na = wide[a], pages[a].ink_blocks
             best = (0.0, None, 0)
-            # The same chalk shows up elsewhere only as this view goes away (the
-            # board was slid); in place, it must predate this view's loss.
-            slack = self._samples(30)
-            lost = (len(self.times) if pages[a].lost_ms is None
-                    else self.times.index(pages[a].lost_ms))
-            ya = pages[a].rect[1] // BLOCK
+            # Chalk written after this page's content was gone cannot be the same chalk.
+            limit = (len(self.times) if pages[a].lost_ms is None
+                     else self.times.index(pages[a].lost_ms)) + self._samples(30)
             for b in range(len(pages)):
                 if b == a or b in gone or pages[b].ink_blocks < 0.9 * na:
                     continue
                 pb = pages[b]
-                x0, yb = pb.rect[0] // BLOCK, pb.rect[1] // BLOCK
-                before = pb.occ & (pb.seen <= lost + slack)
-                moved = before & (pb.seen >= pages[a].ref - slack)
-                ha, hb = A.shape[0], pb.occ.shape[0]
-                near = np.zeros((2, hb, wb), bool)
-                near[0, :, x0:x0 + pb.occ.shape[1]] = moved
-                near[1, :, x0:x0 + pb.occ.shape[1]] = before
-                near = [_morph(m, 3, grow=True) for m in near]
+                x0 = pb.rect[0] // BLOCK
+                B = np.zeros((pb.occ.shape[0], wb), bool)
+                B[:, x0:x0 + pb.occ.shape[1]] = pb.occ & (pb.seen <= limit)
+                B = _morph(B, 3, grow=True)
+                ha, hb = A.shape[0], B.shape[0]
                 for dy in range(-ha + 1, hb):   # A's row 0 sits on B's row dy
-                    B = near[abs(yb + dy - ya) <= 1]
                     lo, hi = max(0, dy), min(hb, dy + ha)
                     hit = (A[lo - dy:hi - dy] & B[lo:hi]).sum() / na
                     if hit > best[0]:
@@ -410,8 +547,9 @@ class BoardExtractor:
     def _audit(self, pages: list[Page]) -> dict:
         """Share of strong chalk seen once a minute that some page holds.
 
-        Uses the raw per-frame chalk, not the tracked state, so a block the
-        tracker never believed in still counts against the result.
+        Uses the raw per-frame chalk, not the tracked state, so chalk the
+        tracker never believed in, or on a panel it put on no sheet, counts
+        against the result.
         """
         seen = held = 0
         worst = []
@@ -419,11 +557,17 @@ class BoardExtractor:
             f = self.F[i]
             ink = self._observable(f) & ((f & HI) > 0)
             cover = np.zeros(ink.shape, bool)
-            for p in pages:
-                if p.ref < i or not p.occ.any() or p.born[p.occ].min() > i:
+            for k, s in enumerate(self.sheets):
+                if i not in s.pos:
                     continue
-                x0, y0 = p.rect[0] // BLOCK, p.rect[1] // BLOCK
-                cover[y0:y0 + p.occ.shape[0], x0:x0 + p.occ.shape[1]] |= _morph(p.occ, 3, grow=True)
+                mine = np.zeros(s.state.shape, bool)
+                for p in pages:
+                    if p.sheet == k and p.ref >= i and p.seen[p.occ].min() <= i:
+                        r0, c0 = p.origin
+                        mine[r0:r0 + p.occ.shape[0], c0:c0 + p.occ.shape[1]] |= p.occ
+                r0, c0, r1, c1 = s.vis[i]
+                y0 = r0 + s.pos[i]
+                cover[y0:y0 + r1 - r0, c0:c1] |= _morph(mine[r0:r1, c0:c1], 3, grow=True)
             miss = int((ink & ~cover).sum())
             seen += int(ink.sum())
             held += int(ink.sum()) - miss
