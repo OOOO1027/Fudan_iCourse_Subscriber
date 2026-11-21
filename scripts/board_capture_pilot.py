@@ -104,11 +104,11 @@ def survey_sources(client, directory):
         try:
             url, headers = client.get_stream_params(client.sign_video_url(base, now=now))
             found[key] = probe(url, headers)
-            for share in (0.2, 0.5, 0.8):
-                at = int(float(found[key]["duration"]) * share)
-                quiet(["ffmpeg", "-nostdin", "-y", "-headers", headers, *RECONNECT, "-ss", str(at),
-                       "-i", url, "-frames:v", "1", "-q:v", "3",
-                       str(directory / f"source-{key}-{at:05d}s.jpg")], 180)
+            # Seeking on the input failed through the gateway, so decode up to each still.
+            for at in (300, 3600):
+                quiet(["ffmpeg", "-nostdin", "-y", "-headers", headers, *RECONNECT, "-i", url,
+                       "-ss", str(at), "-frames:v", "1", "-q:v", "3",
+                       str(directory / f"source-{key}-{at:05d}s.jpg")], 600)
         except Exception as exc:                  # a survey must not stop the trial
             found.setdefault(key, {})["error"] = type(exc).__name__
         print(f"Source {key}:", {k: found[key].get(k) for k in
@@ -242,6 +242,9 @@ def main():
             t0 = time.time()
             pages, report = extractor.finish()
             t_finish = time.time() - t0
+            # Block-level board and chalk masks (not images) for offline work on the tracker.
+            np.savez_compressed(review / "features.npz", F=extractor.F & 7,
+                                times=np.asarray(times))
 
             (review / "pages").mkdir()
             for k, page in enumerate(pages):
