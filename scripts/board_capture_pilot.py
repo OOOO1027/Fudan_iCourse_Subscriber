@@ -101,22 +101,29 @@ def probe(url, headers):
 
 
 def survey_sources(client, directory):
-    """What each listed replay source is: its format and three stills."""
-    info = client.get_sub_info(COURSE, SUB)
-    now = info.get("now")
-    now = int(now) if isinstance(now, str) else now
+    """What each listed replay source is: its format and two stills."""
+    def listed():
+        info = client.get_sub_info(COURSE, SUB)
+        now = info.get("now")
+        now = int(now) if isinstance(now, str) else now
+        return {key: (entry.get("preview_url"), now)
+                for key, entry in (info.get("video_list") or {}).items() if isinstance(entry, dict)}
+
+    def fresh(key):
+        # A signed URL is refused on its second request: sign again for every one.
+        base, now = listed()[key]
+        return client.get_stream_params(client.sign_video_url(base, now=now))
+
     found = {}
-    for key, entry in (info.get("video_list") or {}).items():
-        base = entry.get("preview_url") if isinstance(entry, dict) else None
+    for key, (base, _) in listed().items():
         if not (isinstance(base, str) and base.endswith(".mp4")):
             continue
         try:
-            url, headers = client.get_stream_params(client.sign_video_url(base, now=now))
-            found[key] = probe(url, headers)
-            # Decode up to each still (seeking on the input is untested through the
-            # gateway) and write PNG: ffmpeg refuses limited-range video as JPEG.
+            found[key] = probe(*fresh(key))
             for at in (300, 3600):
+                url, headers = fresh(key)
                 still = directory / f"source-{key}-{at:05d}s.png"
+                # PNG: ffmpeg refuses limited-range video as JPEG.
                 quiet(["ffmpeg", "-nostdin", "-y", "-headers", headers, *RECONNECT, "-i", url,
                        "-map", "0:v:0", "-ss", str(at), "-frames:v", "1", "-update", "1",
                        str(still)], 600)

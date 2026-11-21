@@ -84,18 +84,23 @@ def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(edges[::2].tolist(), edges[1::2].tolist()))
 
 
-def panels(board: np.ndarray, columns: np.ndarray, min_w: int = 24, min_h: int = 12) -> list[tuple]:
+def panels(board: np.ndarray, columns: np.ndarray, ink: np.ndarray,
+           min_w: int = 24, min_h: int = 12) -> list[tuple]:
     """Visible panels (x0, y0, x1, y1): columns of board, split at the frames between panels.
 
     `columns` is the board mask of the last minute or so: someone standing in
-    front of a panel must not split its column in two.
+    front of a panel must not split its column in two.  The frame between two
+    panels can pass for board in part when it reflects one; it is then a
+    bright line across a row that is not all board, which a line of
+    handwriting never is.
     """
     out = []
     for x0, x1 in _runs(columns.sum(axis=0) >= min_h):
         if x1 - x0 < min_w:
             continue
-        rows = board[:, x0:x1].sum(axis=1)
-        for y0, y1 in _runs(rows >= 0.3 * (x1 - x0)):
+        share = board[:, x0:x1].mean(axis=1)
+        inside = (share >= 0.5) & ~((share < 0.9) & (ink[:, x0:x1].mean(axis=1) >= 0.5))
+        for y0, y1 in _runs(inside):
             if y1 - y0 >= min_h and board[y0:y1, x0:x1].mean() >= 0.5:
                 out.append((x0, y0, x1, y1))
     return out
@@ -251,7 +256,7 @@ class BoardExtractor:
         hi, lo = (f & HI) > 0, (f & LO) > 0
         near = _morph(lo, 3, grow=True)
         self.recent = (self.recent + [brd])[-12:]
-        free = dict(enumerate(panels(brd, np.any(self.recent, axis=0))))
+        free = dict(enumerate(panels(brd, np.any(self.recent, axis=0), lo)))
 
         def crop(a, seg):
             return a[seg[1]:seg[3], seg[0]:seg[2]]
@@ -471,14 +476,18 @@ class BoardExtractor:
             j = len(serves) - 1 - int(np.argmax(serves[::-1]))    # the latest of the best
             choice[left & good[j]] = j
             left &= ~good[j]
-        if (choice >= 0).any():
-            choice[choice < 0] = np.bincount(choice[choice >= 0]).argmax()   # never unobstructed
-        else:
-            choice[:] = int(np.searchsorted(cand, ref))
-        captured = int(hits[choice, np.arange(len(tiles))][np.isfinite(score[choice, np.arange(len(tiles))])].sum())
-        image = Image.new("RGB", (w * BLOCK, h * BLOCK)) if images else None
+        each = np.arange(len(tiles))
+        captured = int(hits[choice, each][choice >= 0].sum())
+        # A tile no frame shows unobstructed: the frame that shows most of it as
+        # board, or nothing if it was never much in view.
+        for n in np.flatnonzero(choice < 0):
+            share = brd[(slice(None), *tiles[n])].mean(axis=(1, 2))
+            j = len(share) - 1 - int(np.argmax(share[::-1]))
+            if share[j] >= 0.5:
+                choice[n] = j
+        image = Image.new("RGB", (w * BLOCK, h * BLOCK), (28, 44, 38)) if images else None
         if images:
-            for j in np.unique(choice):
+            for j in np.unique(choice[choice >= 0]):
                 t = int(cand[j])
                 frame, p = self._frame(t), s.pos[t]
                 for n in np.flatnonzero(choice == j):
@@ -487,7 +496,7 @@ class BoardExtractor:
                     piece = frame[max(top, 0):top + (sy.stop - sy.start) * BLOCK,
                                   left_px:left_px + (sx.stop - sx.start) * BLOCK]
                     image.paste(Image.fromarray(piece), (sx.start * BLOCK, sy.start * BLOCK))
-        frames_used = len(np.unique(choice))
+        frames_used = len(np.unique(choice[choice >= 0]))
         total = int(occ.sum())
         p = s.pos[ref]
         page = Page(rect=(c0 * BLOCK, (r0 + p) * BLOCK, c1 * BLOCK, (r1 + p) * BLOCK), first_ms=0,
@@ -558,12 +567,18 @@ class BoardExtractor:
                     continue
                 pb = pages[b]
                 x0 = pb.rect[0] // BLOCK
+                # Chalk that is back on the same sheet in the same place was never
+                # wiped: a board read wrongly while it was being slid.
+                again = pb.sheet == pages[a].sheet
                 B = np.zeros((pb.occ.shape[0], wb), bool)
-                B[:, x0:x0 + pb.occ.shape[1]] = pb.occ & (pb.seen <= limit)
+                B[:, x0:x0 + pb.occ.shape[1]] = pb.occ if again else pb.occ & (pb.seen <= limit)
                 B = _morph(B, 3, grow=True)
                 ha, hb = A.shape[0], B.shape[0]
-                for dy in range(-ha + 1, hb):   # A's row 0 sits on B's row dy
+                at = pages[a].origin[0] - pb.origin[0]
+                for dy in ([at] if again else range(-ha + 1, hb)):   # A's row 0 sits on B's row dy
                     lo, hi = max(0, dy), min(hb, dy + ha)
+                    if lo >= hi:
+                        continue
                     hit = (A[lo - dy:hi - dy] & B[lo:hi]).sum() / na
                     if hit > best[0]:
                         best = (hit, b, dy)
