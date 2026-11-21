@@ -1,0 +1,80 @@
+name: Board Capture Pilot
+
+# Trial of scripts/board_capture_pilot.py on one lecture. Runs only on pushes
+# to the board-capture branch and writes nothing to the repository: the result
+# is one artifact, encrypted to scripts/board_review_key.pub.
+on:
+  push:
+    branches: [board-capture]
+    paths:
+      - 'src/ai/board_capture.py'
+      - 'scripts/board_capture_pilot.py'
+      - 'scripts/test_board_capture.py'
+      - '.github/workflows/board_capture_pilot.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: board-capture-pilot
+  cancel-in-progress: true
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure encrypted session cache
+        run: echo "ICOURSE_SESSION_FILE=$RUNNER_TEMP/icourse-auth/session.enc" >> "$GITHUB_ENV"
+
+      # Read-only: reuse the scheduled check's session, never save one back.
+      - name: Restore encrypted authentication session
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/icourse-auth/session.enc
+          key: icourse-session-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: icourse-session-v1-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Python packages
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}/lib/python*/site-packages
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        if: steps.cache-pip.outputs.cache-hit != 'true'
+        run: pip install -r requirements.txt
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Test board capture on synthetic scenes
+        run: python scripts/test_board_capture.py
+
+      - name: Extract board pages from one lecture
+        timeout-minutes: 85
+        env:
+          StuId: ${{ secrets.STUID }}
+          UISPsw: ${{ secrets.UISPSW }}
+          UIS_TOTP_SECRET: ${{ secrets.UIS_TOTP_SECRET }}
+          BOARD_OUTPUT: ${{ runner.temp }}/board-review
+        run: python -u scripts/board_capture_pilot.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: board-review
+          path: ${{ runner.temp }}/board-review/bundle.bin
+          if-no-files-found: ignore
+          retention-days: 7
