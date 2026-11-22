@@ -27,6 +27,7 @@ from src.pipeline.lecture_selection import (
     lecture_needs_processing,
     promote_hidden_playbacks,
 )
+from src.pipeline.board_stage import BoardStage
 from src.pipeline.lecture_runner import LectureRunner
 from src.runtime.reporter import Reporter
 from src.runtime.scheduler import Scheduler
@@ -180,7 +181,8 @@ def _drive_lectures(client: ICourseClient, db: Database,
                     scheduler: Scheduler, transcriber: Transcriber,
                     summarizer: Summarizer, reporter: Reporter,
                     all_lectures: list[tuple[str, str, dict]],
-                    email_items: list) -> None:
+                    email_items: list,
+                    boards: BoardStage | None = None) -> None:
     """Phase 2: run each lecture through LectureRunner.
 
     Pre-schedules the first lecture's prefetch (audio + images) before
@@ -194,7 +196,7 @@ def _drive_lectures(client: ICourseClient, db: Database,
     scheduler.prefetch_lecture(client, first_course, str(first_lec["sub_id"]))
 
     runner = LectureRunner(
-        client, db, scheduler, transcriber, summarizer, reporter,
+        client, db, scheduler, transcriber, summarizer, reporter, boards,
     )
 
     for i, (course_id, course_title, lecture) in enumerate(all_lectures):
@@ -355,16 +357,21 @@ def run():
         return
 
     scheduler = Scheduler(reporter=reporter)
+    # Board pages for the courses in BOARD_COURSE_IDS; None when that is empty.
+    boards = BoardStage.from_env(reporter.info)
 
     try:
         all_lectures = _enumerate_lectures(client, db, reporter)
         _drive_lectures(
             client, db, scheduler, transcriber, summarizer, reporter,
-            all_lectures, email_items,
+            all_lectures, email_items, boards,
         )
 
     finally:
         scheduler.shutdown()
+
+    if boards is not None:
+        boards.backfill(client, db, summarizer, _check_session)
 
     _send_email(emailer, db, reporter, email_items)
     reporter.run_footer()

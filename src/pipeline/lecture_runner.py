@@ -18,6 +18,9 @@ log greps):
      ``Transcriber.transcribe_tail`` reads PCM from the disk file with
      tail-f semantics while ffmpeg keeps writing.
   E  ``handle.drain()`` blocks for any remaining OCR jobs.
+  E3 for courses named in BOARD_COURSE_IDS, ``BoardStage.notes_for`` extracts
+     and reads the lecture's board pages (about twenty minutes of replay
+     sampling); their text joins the prompt and follows the summary.
   F  ``bucketer.assemble`` builds the prompt; ``Summarizer.summarize``
      calls the LLM round-robin until one succeeds.
   G  persist ``update_summary``, ``mark_processed``, ``clear_error``.
@@ -34,6 +37,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from src.ai import bucketer
+from src.pipeline import board_stage
 from src.pipeline.lecture_selection import (
     PPT_ONLY_SUMMARY_MARKER,
     has_usable_summary,
@@ -43,6 +47,7 @@ from src.ai.transcriber import IncompleteAudioError, NoAudioStreamError
 
 if TYPE_CHECKING:
     from src.data.database import Database
+    from src.pipeline.board_stage import BoardStage
     from src.api.icourse import ICourseClient
     from src.runtime.reporter import Reporter
     from src.runtime.scheduler import Scheduler
@@ -55,13 +60,15 @@ class LectureRunner:
 
     def __init__(self, client: "ICourseClient", db: "Database",
                  scheduler: "Scheduler", transcriber: "Transcriber",
-                 summarizer: "Summarizer", reporter: "Reporter"):
+                 summarizer: "Summarizer", reporter: "Reporter",
+                 boards: "BoardStage | None" = None):
         self._client = client
         self._db = db
         self._scheduler = scheduler
         self._transcriber = transcriber
         self._summarizer = summarizer
         self._reporter = reporter
+        self._boards = boards
         self._ppt = PPTPipeline(db, scheduler, reporter)
 
     # ── Public entry point ──────────────────────────────────────────────
@@ -154,8 +161,19 @@ class LectureRunner:
             self._db.clear_error(sub_id)
             return None
 
+        # ── Phase E3 — board pages, only for the courses that ask for them ──
+        # After ASR so the replay decoding does not compete with it for CPU.
+        # Returns None on any failure; the lecture is then summarised without.
+        board_notes = None
+        if self._boards is not None:
+            board_notes = self._boards.notes_for(
+                self._client, course_id, sub_id, course_title,
+                transcript, transcript_segments,
+            )
+
         summary = self._summarize(
             sub_id, course_title, transcript, transcript_segments, kept_pages,
+            board_notes,
         )
         if summary is None:
             self._release_audio(sub_id)
@@ -299,7 +317,8 @@ class LectureRunner:
 
     def _summarize(self, sub_id: str, course_title: str, transcript: str,
                    transcript_segments: list[dict] | None,
-                   kept_pages: list[dict] | None = None) -> Optional[str]:
+                   kept_pages: list[dict] | None = None,
+                   board_notes: list[dict] | None = None) -> Optional[str]:
         try:
             if kept_pages is None:
                 kept_pages = self._db.get_done_ppt_pages(sub_id)
@@ -309,6 +328,7 @@ class LectureRunner:
             prompt_text = self._add_ppt_only_prompt_warning(
                 transcript, prompt_text,
             )
+            prompt_text = board_stage.prompt_with_boards(prompt_text, board_notes)
             self._reporter.info(
                 f"    [Time] Generating summary at "
                 f"{time.strftime('%H:%M:%S')}"
@@ -318,10 +338,13 @@ class LectureRunner:
                 course_title, prompt_text,
             )
             summary = self._apply_ppt_only_summary_notice(transcript, summary)
+            summary = board_stage.summary_with_boards(summary, board_notes)
             self._reporter.info(
                 f"    [OK] Summary by {model_used}: {len(summary)} chars"
             )
             self._db.update_summary(sub_id, summary, model_used)
+            if board_notes is not None and self._boards is not None:
+                self._boards.mark_in_summary(sub_id)
             return summary
         except Exception as e:
             self._reporter.info(

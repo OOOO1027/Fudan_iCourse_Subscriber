@@ -1,15 +1,22 @@
 name: Board Capture Pilot
 
-# Trial of scripts/board_capture_pilot.py on one lecture. Runs only on pushes
-# to the board-capture branch and writes nothing to the repository: the result
-# is one artifact, encrypted to scripts/board_review_key.pub.
+# Dry run of the board stage (scripts/board_capture_pilot.py) on one lecture:
+# pages extracted, read by the vision model, and the lecture summarised again
+# with them. Runs only on pushes to the board-capture branch and writes nothing
+# to the repository or the database: the result is one artifact, encrypted to
+# scripts/board_review_key.pub.
 on:
   push:
     branches: [board-capture]
     paths:
       - 'src/ai/board_capture.py'
+      - 'src/ai/board_reader.py'
+      - 'src/pipeline/board_stage.py'
+      - 'src/pipeline/board_store.py'
+      - 'src/pipeline/lecture_runner.py'
       - 'scripts/board_capture_pilot.py'
       - 'scripts/test_board_capture.py'
+      - 'tests/test_board_stage.py'
       - '.github/workflows/board_capture_pilot.yml'
 
 permissions:
@@ -23,6 +30,9 @@ jobs:
   pilot:
     runs-on: ubuntu-latest
     timeout-minutes: 100
+    env:
+      BOARD_COURSE_ID: "38985"
+      BOARD_SUB_ID: "693743"
 
     steps:
       - uses: actions/checkout@v4
@@ -59,17 +69,53 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+
       - name: Test board capture on synthetic scenes
         run: python scripts/test_board_capture.py
 
-      - name: Extract board pages from one lecture
+      # Read-only copy of the database, for the lecture's transcript and PPT text.
+      - name: Fetch and decode the database
+        env:
+          STUID: ${{ secrets.STUID }}
+          UISPSW: ${{ secrets.UISPSW }}
+        run: |
+          git fetch --depth=1 origin "+refs/heads/data:refs/remotes/origin/data"
+          mkdir -p "$RUNNER_TEMP/db/sharded/shards"
+          git show origin/data:data/icourse-index.enc > "$RUNNER_TEMP/db/sharded/icourse-index.enc"
+          for path in $(git ls-tree -r --name-only origin/data | grep '^data/shards/'); do
+            git show "origin/data:$path" > "$RUNNER_TEMP/db/sharded/shards/$(basename "$path")"
+          done
+          python scripts/db_shard.py reassemble "$RUNNER_TEMP/db/sharded" "$RUNNER_TEMP/db/icourse.db"
+
+      # Pages extracted by an earlier run, encrypted with the database password.
+      - name: Restore extracted pages
+        id: pages
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/board-pages
+          key: board-pages-v1-${{ env.BOARD_SUB_ID }}-${{ hashFiles('src/ai/board_capture.py') }}
+
+      - name: Run the board stage on one lecture
         timeout-minutes: 85
         env:
           StuId: ${{ secrets.STUID }}
           UISPsw: ${{ secrets.UISPSW }}
           UIS_TOTP_SECRET: ${{ secrets.UIS_TOTP_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          BOARD_DB: ${{ runner.temp }}/db/icourse.db
+          BOARD_PAGE_CACHE: ${{ runner.temp }}/board-pages
           BOARD_OUTPUT: ${{ runner.temp }}/board-review
         run: python -u scripts/board_capture_pilot.py
+
+      - name: Save extracted pages
+        if: always() && steps.pages.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/board-pages
+          key: board-pages-v1-${{ env.BOARD_SUB_ID }}-${{ hashFiles('src/ai/board_capture.py') }}
 
       - uses: actions/upload-artifact@v4
         if: always()

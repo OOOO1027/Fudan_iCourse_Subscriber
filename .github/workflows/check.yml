@@ -9,13 +9,13 @@ on:
       - 'tests/test_webvpn_session.py'
       - '.github/workflows/check.yml'
   schedule:
-    # Every two hours, 08:39-22:39 Asia/Shanghai (UTC+8).
+    # Every two hours, 08:43-22:43 Asia/Shanghai (UTC+8).
     # GitHub delivers this event hours late on this fork and has twice stopped
     # delivering it altogether (2026-10-14 and 2026-11-11), both times shortly
     # after this file was edited with the cron line left unchanged. Pushing a
     # different minute brought it back on 2026-10-20, so change the minute
     # whenever this file is edited. watchdog.yml covers the gaps.
-    - cron: "39 0-14/2 * * *"
+    - cron: "43 0-14/2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -189,6 +189,16 @@ jobs:
             echo "hash=none" >> $GITHUB_OUTPUT
           fi
 
+      # Board pages (src/pipeline/board_stage.py) are off unless the repository
+      # variable BOARD_COURSE_IDS names courses. A failed fetch leaves them off
+      # for this run only.
+      - name: Fetch board index from boards branch
+        if: vars.BOARD_COURSE_IDS != ''
+        continue-on-error: true
+        env:
+          BOARD_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: bash scripts/board_branch.sh fetch data/boards
+
       - name: Run
         timeout-minutes: 350
         env:
@@ -203,6 +213,8 @@ jobs:
           SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          BOARD_COURSE_IDS: ${{ vars.BOARD_COURSE_IDS }}
+          BOARD_BACKFILL_PER_RUN: ${{ vars.BOARD_BACKFILL_PER_RUN }}
         run: python -u main.py
 
       - name: Check verified session for caching
@@ -285,3 +297,12 @@ jobs:
           git commit -q -m "chore: update encrypted database (sharded v2)"
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
           git push --force origin data
+
+      # After the database, so a problem here cannot hold it back. The summaries
+      # already carry the board text; this keeps the page images.
+      - name: Deploy board pages to boards branch
+        if: always() && vars.BOARD_COURSE_IDS != ''
+        continue-on-error: true
+        env:
+          BOARD_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: bash scripts/board_branch.sh push data/boards

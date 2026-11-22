@@ -174,6 +174,17 @@ COURSE_IDS = [
     if c.strip()
 ]
 
+# 板书提取（src/pipeline/board_stage.py）：只对这里列出的课程启用，留空则整个功能关闭。
+BOARD_COURSE_IDS = [
+    c.strip()
+    for c in os.environ.get("BOARD_COURSE_IDS", "").split(",")
+    if c.strip()
+]
+# scripts/board_branch.sh 取回并推送的目录。
+BOARD_STORE_DIR = os.environ.get("BOARD_STORE_DIR", os.path.join(DATA_DIR, "boards"))
+# 每次运行最多给几节"已有总结但还没并入板书"的课补板书并重写总结；0 表示不补。
+BOARD_BACKFILL_PER_RUN = int(os.environ.get("BOARD_BACKFILL_PER_RUN", "").strip() or 0)
+
 # 学期级课程目录爬取（已弃用 — main.py 现在自动发现所有学期）。
 # 保留此变量仅用于兼容老部署环境，新部署无需设置。
 # 例：CRAWL_TERM=25
