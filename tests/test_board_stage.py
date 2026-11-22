@@ -77,7 +77,8 @@ class Scene:
                                   "seconds": {"sampling": 1, "extracting": 1}}
 
         self.stage = BoardStage(
-            open_store(self.dir.name), BoardReader(self.vision, ["model-a", "model-b"], pause=0),
+            open_store(self.dir.name),
+            BoardReader(self.vision, ["model-a", "model-b"], pause=0, retry_wait=0),
             ["100"], self.log.append, capture_fn=capture or default_capture, **options)
 
     def reopened(self):
@@ -188,7 +189,7 @@ class StageTest(unittest.TestCase):
         late = Scene(self, deadline_s=-1)
         self.assertIsNone(late.stage.notes_for(object(), "100", "7", "课"))
         self.assertEqual((scene.captures, late.captures), (0, 0))
-        self.assertIsNone(scene.reopened().get("7"))
+        self.assertEqual(scene.reopened().get("7")["status"], "pending")
 
     def test_speech_during_a_board(self):
         segments = [{"start_ms": k * 60_000, "end_ms": k * 60_000 + 50_000, "text": f"s{k}"} for k in range(10)]
@@ -268,10 +269,21 @@ class BackfillTest(unittest.TestCase):
         self.assertEqual(self.run_backfill(scene, lectures, rows), {})
         self.assertEqual(scene.captures, 3)
 
-    def test_off_by_default(self):
+    def test_older_lectures_are_left_alone_by_default(self):
         scene = Scene(self)
         rows = {"1": {"summary": SUMMARY, "transcript": "speech"}}
         self.assertEqual(self.run_backfill(scene, [{"sub_id": 1, "date": "2026-10-14"}], rows), {})
+
+    def test_a_lecture_left_for_later_is_done_in_the_next_run(self):
+        lectures = [{"sub_id": 1, "date": "2026-10-14"}, {"sub_id": 2, "date": "2026-10-21"}]
+        rows = {str(k): {"summary": SUMMARY, "transcript": "speech " * 50} for k in (1, 2)}
+        scene = Scene(self, vision=Vision(broken_models=("model-a", "model-b")))
+        self.assertIsNone(scene.stage.notes_for(object(), "100", "1", "课"))     # no model answering
+        scene.vision.broken_models = ()
+        saved = self.run_backfill(scene, lectures, rows)                         # backfill_per_run is 0
+        self.assertEqual(sorted(saved), ["1"])
+        self.assertTrue(scene.reopened().get("1")["in_summary"])
+        self.assertIsNone(scene.reopened().get("2"))
 
 
 if __name__ == "__main__":

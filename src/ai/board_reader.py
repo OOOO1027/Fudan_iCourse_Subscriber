@@ -16,8 +16,13 @@ import time
 from PIL import Image
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# Vision models with a free tier as of 2026-11, most capable first.
-MODELS = "gemini-3.8-flash,gemini-4-hydrogen,gemini-3.6-flash,gemini-3-flash-preview"
+# Vision models with a free tier as of 2026-11.  On the lecture of 2026-10-28,
+# gemini-4-hydrogen read every figure that could be checked correctly and
+# marked 31 places as unreadable; gemini-3.6-flash marked one, and turned
+# 1,740,032 into 1,760,032, which the summary then repeated.  A weaker model is
+# therefore not a fallback: when these do not answer, the lecture waits for a
+# later run.
+MODELS = "gemini-4-hydrogen,gemini-3.8-flash"
 BATCH = 4
 EMPTY = "（无可读内容）"
 MARK = re.compile(r"^\s*<<<\s*板书\s*(\d+)\s*>>>\s*$", re.M)
@@ -80,10 +85,12 @@ def parse(answer: str, wanted: list[int]) -> dict[int, str]:
 
 
 class BoardReader:
-    def __init__(self, client=None, models: list[str] | None = None, pause: float = 4.0):
+    def __init__(self, client=None, models: list[str] | None = None, pause: float = 4.0,
+                 retry_wait: float = 20.0):
         self.models = models or [m.strip() for m in os.environ.get(
             "BOARD_VISION_MODELS", MODELS).split(",") if m.strip()]
-        self.pause = pause
+        self.pause = pause                # between requests
+        self.retry_wait = retry_wait      # before asking again after a 429 / 5xx / timeout
         self._client = client
         self._key = os.environ.get("GEMINI_API_KEY", "").strip()
 
@@ -104,16 +111,20 @@ class BoardReader:
         if not self.available():
             return False
         for model in list(self.models):
-            try:
-                self._api().chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": "Reply with OK."}],
-                    timeout=60)
-            except Exception as exc:
-                print(f"[Boards] {model} is not answering: {_kind(exc)}", flush=True)
-                continue
-            self.models.remove(model)
-            self.models.insert(0, model)
-            return True
+            for attempt in (1, 2, 3):             # these models often answer 503 for a moment
+                try:
+                    self._api().chat.completions.create(
+                        model=model, messages=[{"role": "user", "content": "Reply with OK."}],
+                        timeout=60)
+                except Exception as exc:
+                    print(f"[Boards] {model} is not answering: {_kind(exc)}", flush=True)
+                    if attempt == 3 or not _transient(exc):
+                        break
+                    time.sleep(self.retry_wait * attempt)
+                    continue
+                self.models.remove(model)
+                self.models.insert(0, model)
+                return True
         return False
 
     def read(self, title: str, pages: list[dict]) -> tuple[list[str], str]:
@@ -159,5 +170,5 @@ class BoardReader:
             except Exception as exc:
                 if attempt == 3 or not _transient(exc):
                     raise
-                time.sleep(30 * attempt)
+                time.sleep(self.retry_wait * attempt)
         return parse(response.choices[0].message.content or "", chunk)

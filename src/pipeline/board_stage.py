@@ -8,9 +8,11 @@ text, and src/pipeline/board_store.py keeps both.  The readings join the
 summary prompt (prompt_with_boards) and follow the summary as a record
 (summary_with_boards).
 
-Lectures summarised before their boards were ready are handled by backfill():
-at most BOARD_BACKFILL_PER_RUN of them per run, newest first, are captured and
-summarised again from the stored transcript.
+A lecture whose boards could not be done in time (no vision model answering,
+a failed capture) is summarised without them and marked in the store;
+backfill() does it in a later run and summarises it again from the stored
+transcript.  backfill() also takes up to BOARD_BACKFILL_PER_RUN lectures per
+run, newest first, that were summarised before boards were switched on.
 
 Nothing here may stop a lecture from being summarised.  notes_for(),
 mark_in_summary() and backfill() catch their own failures; a lecture whose
@@ -219,7 +221,8 @@ def summary_with_boards(summary: str, notes: list[dict] | None) -> str:
         return summary
     summary = _third_level(summary)
     parts = [f"{RECORD_HEADING}\n\n以下是程序从回放中提取的 {len(notes)} 块板书，由模型识读成文字，"
-             "按书写时间排列，供核对。识读可能有误；原图已加密留存。"]
+             "按书写时间排列，供核对。识读可能有误，数字、上下标和分式以原图为准；[?] 是没认出来的地方。"
+             "原图已加密留存。"]
     parts += [f"#### 板书 {n['n']}（{clock(n['first_ms'])}–{clock(n['last_ms'])}）\n\n{n['text']}"
               for n in notes]
     return summary.rstrip() + "\n\n" + "\n\n".join(parts) + "\n"
@@ -290,11 +293,15 @@ class BoardStage:
         attempts = entry["attempts"] if entry else 0
         if attempts >= MAX_ATTEMPTS:
             return None
-        if time.monotonic() - self.started > self.deadline_s:
-            self.log(f"    [Boards] {sub_id}: left for a later run, this one has gone on too long.")
-            return None
-        if not self.reader.preflight():
-            self.log(f"    [Boards] {sub_id}: left for a later run, no vision model is answering.")
+        late = time.monotonic() - self.started > self.deadline_s
+        if late or not self.reader.preflight():
+            self.log(f"    [Boards] {sub_id}: left for a later run, "
+                     f"{'this one has gone on too long' if late else 'no vision model is answering'}.")
+            if entry is None:                 # so that backfill() comes back to it
+                self.store.set(sub_id, {
+                    "course_id": course_id, "status": "pending", "attempts": 0, "version": VERSION,
+                    "updated": datetime.now().isoformat(timespec="seconds")})
+                self.store.save()
             return None
 
         self.log(f"    [Boards] {sub_id}: sampling the replay...")
@@ -347,9 +354,18 @@ class BoardStage:
         except Exception as exc:
             self.log(f"    [Boards] could not record {sub_id} as summarised: {type(exc).__name__}")
 
+    def _owed(self, entry: dict) -> bool:
+        return not entry.get("in_summary") and not (
+            entry["status"] == "failed" and entry["attempts"] >= MAX_ATTEMPTS)
+
     def backfill(self, client, db, summarizer, check_session=None) -> None:
-        """Give board readings to lectures that were summarised without them."""
-        if self.backfill_per_run <= 0 or summarizer is None:
+        """Give board readings to lectures that were summarised without them:
+        those this stage left for later, and, up to backfill_per_run per run,
+        those summarised before it was switched on."""
+        if summarizer is None:
+            return
+        if self.backfill_per_run <= 0 and not any(
+                e.get("version") == VERSION and self._owed(e) for e in self.store.lectures.values()):
             return
         try:
             self._backfill(client, db, summarizer, check_session)
@@ -361,24 +377,26 @@ class BoardStage:
         from src.ai import bucketer
         from src.pipeline.lecture_selection import has_usable_summary
 
-        handled = 0
+        handled = older = 0
         for course_id in self.course_ids:
             if check_session:
                 check_session(client)
             detail = client.get_course_detail(course_id)
             for lecture in sorted(detail["lectures"], key=lambda l: str(l.get("date", "")), reverse=True):
-                if handled >= self.backfill_per_run:
+                if handled >= max(1, self.backfill_per_run):
                     return
                 sub_id = str(lecture["sub_id"])
                 row = db.get_lecture(sub_id)
                 if not has_usable_summary(row) or not (row.get("transcript") or "").strip():
                     continue
                 entry = self._usable(sub_id)
-                if entry and (entry.get("in_summary") or
-                              (entry["status"] == "failed" and entry["attempts"] >= MAX_ATTEMPTS)):
+                if entry is None and older >= self.backfill_per_run:
+                    continue                  # from before boards were on: only when asked for
+                if entry is not None and not self._owed(entry):
                     continue
                 if time.monotonic() - self.started > self.deadline_s:
                     return
+                older += entry is None
                 if check_session:
                     check_session(client)
                 self.log(f"[Boards] Backfill: {lecture.get('sub_title', sub_id)}")
