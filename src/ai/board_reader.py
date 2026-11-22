@@ -49,6 +49,13 @@ def _kind(exc: Exception) -> str:
     return f"{type(exc).__name__}{f' {status}' if status else ''}"
 
 
+def _quota(exc: Exception) -> str:
+    """The body of a 429, which names the quota that ran out.  Long digit runs
+    (project numbers) are cut."""
+    body = getattr(exc, "body", None) or getattr(getattr(exc, "response", None), "text", "") or exc
+    return re.sub(r"\d{8,}", "…", str(body))[:900]
+
+
 def _transient(exc: Exception) -> bool:
     if getattr(exc, "status_code", None) in (429, 500, 502, 503, 504):
         return True
@@ -120,9 +127,7 @@ class BoardReader:
             try:
                 self._read_with(model, title, pages, texts)
             except Exception as exc:
-                # A 429 says which quota ran out; long digit runs (project numbers) are cut.
-                detail = (": " + re.sub(r"\d{8,}", "…", str(exc))[:700]
-                          if getattr(exc, "status_code", None) == 429 else "")
+                detail = f": {_quota(exc)}" if getattr(exc, "status_code", None) == 429 else ""
                 print(f"[Boards] {model} stopped after {len(texts)} of {len(pages)} boards: "
                       f"{_kind(exc)}{detail}", flush=True)
             if len(texts) > before:
