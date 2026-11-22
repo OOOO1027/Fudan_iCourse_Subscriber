@@ -50,7 +50,10 @@ GUIDE = (
     "按时间把它和同一时段的讲解合并，用讲解把板书上的推导讲清楚。\n"
     "2. 板书识读可能有误，尤其是手写符号、上下标和分式；与录音明显矛盾时结合上下文修正，"
     "无法确定的照录并注明「板书此处识别不清」。标为 [?] 的地方是没认出来的字。\n"
-    "3. 不要单独列一节「板书内容」，把它自然地并入正文；笔记末尾会由系统另附板书记录。\n\n"
+    "3. 不要单独列一节「板书内容」，把它自然地并入正文；笔记末尾会由系统另附板书记录。\n"
+    "4. 板书上只有只言片语的地方（一个数、一个箭头、半行式子），含义以同一时段的讲解为准；"
+    "讲解里找不到依据时照录原文，不要自行解释它的含义。\n"
+    "5. 标题层级的规定不变：只用 ###、####、#####，不要用 # 和 ##。\n\n"
 )
 
 RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
@@ -198,11 +201,23 @@ def prompt_with_boards(prompt_text: str, notes: list[dict] | None) -> str:
     return f"{GUIDE}{prompt_text}\n\n【板书识读（按书写时间排列）】\n{boards}"
 
 
+def _third_level(summary: str) -> str:
+    """Headings above ### brought down to ###.  The summariser is told not to
+    use them, and did when it was given boards (dry run of 2026-11-22)."""
+    lines, fenced = [], False
+    for line in summary.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        lines.append(line if fenced else re.sub(r"^#{1,2}(?=\s)", "###", line))
+    return "\n".join(lines)
+
+
 def summary_with_boards(summary: str, notes: list[dict] | None) -> str:
     """The summary followed by every board's reading, so that nothing on a
     board depends on the summarising model having kept it."""
     if not notes or RECORD_HEADING in summary:
         return summary
+    summary = _third_level(summary)
     parts = [f"{RECORD_HEADING}\n\n以下是程序从回放中提取的 {len(notes)} 块板书，由模型识读成文字，"
              "按书写时间排列，供核对。识读可能有误；原图已加密留存。"]
     parts += [f"#### 板书 {n['n']}（{clock(n['first_ms'])}–{clock(n['last_ms'])}）\n\n{n['text']}"

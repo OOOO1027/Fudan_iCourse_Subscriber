@@ -212,6 +212,12 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("#### 板书 3（1:06:40–1:08:20）\n\nREINFORCE", summary)
         self.assertEqual(board_stage.summary_with_boards(summary, self.NOTES), summary)
         self.assertEqual(board_stage.prompt_with_boards("PROMPT", []), "PROMPT")
+
+    def test_headings_above_the_third_level_are_brought_down(self):
+        text = "## 一\n\n### 二\n\n```python\n# comment\n## also code\n```\n\n# 三\n\n#hashtag"
+        summary = board_stage.summary_with_boards(text, self.NOTES)
+        self.assertTrue(summary.startswith(
+            "### 一\n\n### 二\n\n```python\n# comment\n## also code\n```\n\n### 三\n\n#hashtag"))
         self.assertEqual(board_stage.summary_with_boards(SUMMARY, None), SUMMARY)
 
     def test_the_runner_puts_boards_into_the_summary(self):
