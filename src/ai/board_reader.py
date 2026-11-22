@@ -87,8 +87,8 @@ def parse(answer: str, wanted: list[int]) -> dict[int, str]:
 class BoardReader:
     def __init__(self, client=None, models: list[str] | None = None, pause: float = 4.0,
                  retry_wait: float = 20.0):
-        self.models = models or [m.strip() for m in os.environ.get(
-            "BOARD_VISION_MODELS", MODELS).split(",") if m.strip()]
+        self.models = models or [m.strip() for m in (os.environ.get(
+            "BOARD_VISION_MODELS", "").strip() or MODELS).split(",") if m.strip()]
         self.pause = pause                # between requests
         self.retry_wait = retry_wait      # before asking again after a 429 / 5xx / timeout
         self._client = client
@@ -100,8 +100,8 @@ class BoardReader:
     def _api(self):
         if self._client is None:
             from openai import OpenAI
-            self._client = OpenAI(
-                api_key=self._key,
+            self._client = OpenAI(                  # retries are done here, visibly
+                api_key=self._key, max_retries=0,
                 base_url=os.environ.get("GEMINI_BASE_URL", "").strip() or BASE_URL)
         return self._client
 
@@ -127,28 +127,39 @@ class BoardReader:
                 return True
         return False
 
-    def read(self, title: str, pages: list[dict]) -> tuple[list[str], str]:
+    def read(self, title: str, pages: list[dict],
+             have: dict[int, str] | None = None) -> tuple[dict[int, str], str]:
         """pages: [{"image": PIL image, "first_ms", "last_ms", "context"}].
-        Returns one reading per page and the model that produced them."""
-        error = None
+        Returns the readings by page index, those in `have` included, and the
+        model that produced the last of them.  When no model can go on (a
+        spent quota, an outage) the readings so far come back and the caller
+        asks again another time with them as `have`."""
+        texts, used = dict(have or {}), ""
         for model in self.models:
+            if len(texts) == len(pages):
+                break
+            before = len(texts)
             try:
-                return self._read_with(model, title, pages), f"gemini/{model}"
+                self._read_with(model, title, pages, texts)
             except Exception as exc:
-                error = exc
-                print(f"[Boards] {model} could not read the boards: {_kind(exc)}", flush=True)
-        raise RuntimeError(f"No vision model read the boards ({_kind(error)})")
+                detail = f": {str(exc)[:300]}" if getattr(exc, "status_code", None) == 429 else ""
+                print(f"[Boards] {model} stopped after {len(texts)} of {len(pages)} boards: "
+                      f"{_kind(exc)}{detail}", flush=True)
+            if len(texts) > before:
+                used = model
+        return texts, f"gemini/{used}" if used else ""
 
-    def _read_with(self, model: str, title: str, pages: list[dict]) -> list[str]:
-        texts: dict[int, str] = {}
+    def _read_with(self, model: str, title: str, pages: list[dict], texts: dict[int, str]) -> None:
         for size in (BATCH, 1):                     # pages a batch skipped are asked for singly
             todo = [k for k in range(len(pages)) if k not in texts]
             for at in range(0, len(todo), size):
-                texts.update(self._ask(model, title, pages, todo[at:at + size]))
+                chunk, t0 = todo[at:at + size], time.time()
+                texts.update(self._ask(model, title, pages, chunk))
+                print(f"[Boards] {model} was shown boards {chunk[0] + 1}-{chunk[-1] + 1}: "
+                      f"{time.time() - t0:.0f}s", flush=True)
                 time.sleep(self.pause)
         if len(texts) < len(pages):
             raise RuntimeError("the answer left some boards out")
-        return [texts[k] for k in range(len(pages))]
 
     def _ask(self, model: str, title: str, pages: list[dict], chunk: list[int]) -> dict[int, str]:
         content = [{"type": "text", "text":
@@ -163,7 +174,7 @@ class BoardReader:
         for attempt in (1, 2, 3):
             try:
                 response = self._api().chat.completions.create(
-                    model=model, timeout=240,
+                    model=model, timeout=180,
                     messages=[{"role": "system", "content": SYSTEM},
                               {"role": "user", "content": content}])
                 break

@@ -215,6 +215,7 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           BOARD_COURSE_IDS: ${{ vars.BOARD_COURSE_IDS }}
           BOARD_BACKFILL_PER_RUN: ${{ vars.BOARD_BACKFILL_PER_RUN }}
+          BOARD_VISION_MODELS: ${{ vars.BOARD_VISION_MODELS }}
         run: python -u main.py
 
       - name: Check verified session for caching

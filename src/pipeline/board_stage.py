@@ -9,9 +9,10 @@ summary prompt (prompt_with_boards) and follow the summary as a record
 (summary_with_boards).
 
 A lecture whose boards could not be done in time (no vision model answering,
-a failed capture) is summarised without them and marked in the store;
-backfill() does it in a later run and summarises it again from the stored
-transcript.  backfill() also takes up to BOARD_BACKFILL_PER_RUN lectures per
+a quota spent halfway through the reading, a failed capture) is summarised
+without them and marked in the store; backfill() does it in a later run,
+reading on from the pages and readings already stored, and summarises it again
+from the stored transcript.  backfill() also takes up to BOARD_BACKFILL_PER_RUN lectures per
 run, newest first, that were summarised before boards were switched on.
 
 Nothing here may stop a lecture from being summarised.  notes_for(),
@@ -30,6 +31,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -241,6 +243,7 @@ class BoardStage:
         self.deadline_s = deadline_s      # no capture starts later than this into the run
         self.capture_fn = capture_fn
         self.started = time.monotonic()
+        self.reader_down = False          # set when reading stops short; no more boards this run
 
     @classmethod
     def from_env(cls, log=print) -> "BoardStage | None":
@@ -291,10 +294,13 @@ class BoardStage:
         if entry and entry["status"] == "ok":
             return entry["notes"]
         attempts = entry["attempts"] if entry else 0
-        if attempts >= MAX_ATTEMPTS:
+        unread = bool(entry) and entry["status"] == "unread"
+        if attempts >= MAX_ATTEMPTS and not unread:
             return None
         late = time.monotonic() - self.started > self.deadline_s
-        if late or not self.reader.preflight():
+        if not late and not self.reader_down and not self.reader.preflight():
+            self.reader_down = True
+        if late or self.reader_down:
             self.log(f"    [Boards] {sub_id}: left for a later run, "
                      f"{'this one has gone on too long' if late else 'no vision model is answering'}.")
             if entry is None:                 # so that backfill() comes back to it
@@ -304,45 +310,65 @@ class BoardStage:
                 self.store.save()
             return None
 
-        self.log(f"    [Boards] {sub_id}: sampling the replay...")
-        try:
-            pages, report = self.capture_fn(client, course_id, sub_id, log=self.log)
+        stored = self.store.load_pages(sub_id) if unread else None
+        if stored:                            # extracted in an earlier run, not yet read in full
+            manifest, images = stored
+            pages = [SimpleNamespace(image=Image.open(io.BytesIO(image)).convert("RGB"), **meta)
+                     for meta, image in zip(manifest["pages"], images)]
+            report, file = manifest["report"], entry["file"]
+            have = {int(k): text for k, text in entry.get("texts", {}).items()}
+        elif attempts >= MAX_ATTEMPTS:        # the stored pages are gone and capturing again is used up
+            return None
+        else:
+            self.log(f"    [Boards] {sub_id}: sampling the replay...")
+            try:
+                pages, report = self.capture_fn(client, course_id, sub_id, log=self.log)
+            except ReplayUnavailable:
+                raise
+            except Exception as exc:
+                self.store.set(sub_id, {
+                    "course_id": course_id, "status": "failed", "attempts": attempts + 1,
+                    "version": VERSION, "updated": datetime.now().isoformat(timespec="seconds"),
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+                self.store.save()
+                raise
+            attempts += 1
             pages = sorted(pages, key=lambda p: p.first_ms)      # numbered in the order written
-            texts, model = self.reader.read(title, [{
-                "image": p.image, "first_ms": p.first_ms, "last_ms": p.last_ms,
-                "context": speech_during(transcript, segments, p.first_ms, p.last_ms,
-                                         report.get("duration_ms"))} for p in pages]) if pages else ([], "")
-        except ReplayUnavailable:
-            raise
-        except Exception as exc:
-            self.store.set(sub_id, {
-                "course_id": course_id, "status": "failed", "attempts": attempts + 1,
-                "version": VERSION, "updated": datetime.now().isoformat(timespec="seconds"),
-                "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
-            self.store.save()
-            raise
+            images = []
+            for page in pages:
+                buffer = io.BytesIO()
+                page.image.save(buffer, "PNG")
+                images.append(buffer.getvalue())
+            file = self.store.put_pages(sub_id, {
+                "sub_id": sub_id, "course_id": course_id, "title": title, "report": report,
+                "pages": [{**page.meta(), "n": k + 1} for k, page in enumerate(pages)]}, images)
+            have = {}
+            self.log(f"    [Boards] {sub_id}: {len(pages)} page(s); sampling "
+                     f"{report['seconds']['sampling']}s, extracting {report['seconds']['extracting']}s.")
 
-        images, listed, notes = [], [], []
-        for k, (page, text) in enumerate(zip(pages, texts)):
-            buffer = io.BytesIO()
-            page.image.save(buffer, "PNG")
-            images.append(buffer.getvalue())
-            listed.append({**page.meta(), "n": k + 1, "text": text})
-            if text.strip() and text.strip() != EMPTY:
-                notes.append({"n": k + 1, "first_ms": page.first_ms, "last_ms": page.last_ms,
-                              "lost_ms": page.lost_ms, "text": text})
-        file = self.store.put_pages(sub_id, {
-            "sub_id": sub_id, "course_id": course_id, "title": title, "reader": model,
-            "pages": listed, "report": report}, images)
-        self.store.set(sub_id, {
-            "course_id": course_id, "status": "ok", "attempts": attempts + 1, "version": VERSION,
-            "updated": datetime.now().isoformat(timespec="seconds"), "file": file,
-            "pages": len(pages), "reader": model, "in_summary": False, "notes": notes,
-            "coverage": report.get("coverage", {}).get("share")})
+        base = {"course_id": course_id, "attempts": attempts, "version": VERSION, "file": file,
+                "pages": len(pages), "coverage": report.get("coverage", {}).get("share"),
+                "updated": datetime.now().isoformat(timespec="seconds")}
+        texts, model = self.reader.read(title, [{
+            "image": p.image, "first_ms": p.first_ms, "last_ms": p.last_ms,
+            "context": speech_during(transcript, segments, p.first_ms, p.last_ms,
+                                     report.get("duration_ms"))} for p in pages], have) if pages else ({}, "")
+        if len(texts) < len(pages):           # quota spent or models down: go on from here next run
+            self.reader_down = True
+            self.store.set(sub_id, {**base, "status": "unread",
+                                    "texts": {str(k): text for k, text in texts.items()}})
+            self.store.save()
+            self.log(f"    [Boards] {sub_id}: {len(texts)} of {len(pages)} boards read; "
+                     "the rest in a later run.")
+            return None
+        notes = [{"n": k + 1, "first_ms": page.first_ms, "last_ms": page.last_ms,
+                  "lost_ms": page.lost_ms, "text": texts[k]}
+                 for k, page in enumerate(pages) if texts[k].strip() and texts[k].strip() != EMPTY]
+        self.store.set(sub_id, {**base, "status": "ok", "reader": model, "in_summary": False,
+                                "notes": notes})
         self.store.save()
-        self.log(f"    [Boards] {sub_id}: {len(pages)} page(s), {len(notes)} with writing, read by "
-                 f"{model or 'nobody'}; sampling {report['seconds']['sampling']}s, "
-                 f"extracting {report['seconds']['extracting']}s.")
+        self.log(f"    [Boards] {sub_id}: {len(pages)} board(s) read by {model or 'nobody'}, "
+                 f"{len(notes)} with writing.")
         return notes
 
     def mark_in_summary(self, sub_id) -> None:
@@ -394,7 +420,7 @@ class BoardStage:
                     continue                  # from before boards were on: only when asked for
                 if entry is not None and not self._owed(entry):
                     continue
-                if time.monotonic() - self.started > self.deadline_s:
+                if self.reader_down or time.monotonic() - self.started > self.deadline_s:
                     return
                 older += entry is None
                 if check_session:

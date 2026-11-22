@@ -225,9 +225,12 @@ def main():
             for path in Path(store_dir).glob("*.rev"):       # what the boards branch would get
                 (review / "store").mkdir(exist_ok=True)
                 (review / "store" / path.name).write_bytes(path.read_bytes())
+            read = notes or [{"n": int(k) + 1, "first_ms": pages[int(k)].first_ms,
+                              "last_ms": pages[int(k)].last_ms, "text": text}
+                             for k, text in sorted((entry.get("texts") or {}).items(), key=lambda i: int(i[0]))]
             (review / "readings.md").write_text("\n\n".join(
                 f"## 板书 {n['n']}（{clock(n['first_ms'])}–{clock(n['last_ms'])}）\n\n{n['text']}"
-                for n in notes or []) + "\n")
+                for n in read) + "\n")
 
             summary_info = {}
             if notes and transcript.strip():

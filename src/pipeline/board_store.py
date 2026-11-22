@@ -4,7 +4,7 @@ The store is a directory that scripts/board_branch.sh mirrors to boards/ on the
 `boards` branch:
 
     index.enc    JSON, one entry per lecture: state and the reading of each board
-    <name>.enc   one lecture's page images with their metadata (pack / unpack)
+    <name>.enc   one lecture's page images with their positions and times
     *.rev        the same two, encrypted to scripts/board_review_key.pub
 
 .enc files use the database's password (src/data/crypto_box.py), so whoever can
@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from Crypto.Cipher import AES, PKCS1_OAEP
@@ -101,6 +103,25 @@ class BoardStore:
         name = self.name(sub_id)
         self._write(name, pack(manifest, images))
         return name
+
+    def load_pages(self, sub_id) -> tuple[dict, list[bytes]] | None:
+        """A lecture's stored pages: from this directory if they were written
+        in this run, else from the branch through board_branch.sh's scratch
+        repository, which fetches the one file on demand."""
+        name = self.name(sub_id)
+        path = self.dir / f"{name}.enc"
+        try:
+            if path.exists():
+                blob = path.read_bytes()
+            else:
+                repo = os.environ.get("BOARD_GIT_DIR") or os.path.join(
+                    os.environ.get("RUNNER_TEMP", "/tmp"), "boards.git")
+                blob = subprocess.run(
+                    ["git", "--git-dir", repo, "show", f"boards:boards/{name}.enc"],
+                    capture_output=True, timeout=300, check=True).stdout
+            return unpack(crypto_box.decrypt(blob, self.password))
+        except Exception:
+            return None
 
     def save(self) -> None:
         if not self.dirty:

@@ -31,10 +31,16 @@ def pages(count):
                  last_ms=k * 600_000 + 300_000, lost_ms=None) for k in range(count)]
 
 
+class QuotaSpent(Exception):
+    status_code = 429
+
+
 class Vision:
-    """Stands in for the OpenAI client: answers every board it is shown."""
-    def __init__(self, skip_in_batches=(), broken_models=(), blank=()):
+    """Stands in for the OpenAI client: answers every board it is shown, until
+    `quota` requests that show boards have been answered."""
+    def __init__(self, skip_in_batches=(), broken_models=(), blank=(), quota=None):
         self.skip_in_batches, self.broken_models, self.blank = skip_in_batches, broken_models, blank
+        self.quota = quota
         self.requests = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -45,6 +51,10 @@ class Vision:
         content = messages[-1]["content"]
         if isinstance(content, str):
             return self._answer("OK")
+        if self.quota is not None:
+            if self.quota <= 0:
+                raise QuotaSpent("quota exceeded")
+            self.quota -= 1
         asked = [int(n) for part in content if part["type"] == "text"
                  for n in re.findall(r"^板书 (\d+)，", part["text"])]
         answered = [n for n in asked if len(asked) == 1 or n not in self.skip_in_batches]
@@ -64,9 +74,10 @@ def open_store(directory, review_key=None):
 
 class Scene:
     """A stage over a temporary store, with a replay that yields `count` pages."""
-    def __init__(self, test, count=3, vision=None, capture=None, **options):
-        self.dir = tempfile.TemporaryDirectory()
-        test.addCleanup(self.dir.cleanup)
+    def __init__(self, test, count=3, vision=None, capture=None, directory=None, **options):
+        self.dir = directory or tempfile.TemporaryDirectory()
+        if directory is None:
+            test.addCleanup(self.dir.cleanup)
         self.vision = vision or Vision()
         self.captures = 0
         self.log = []
@@ -134,7 +145,7 @@ class ReaderTest(unittest.TestCase):
             {"image": p.image, "first_ms": p.first_ms, "last_ms": p.last_ms, "context": "speech"}
             for p in pages(5)])
         self.assertEqual(model, "gemini/model-a")
-        self.assertEqual([t[:5] for t in texts], [f"$x_{n} " for n in range(1, 6)])
+        self.assertEqual([texts[k][:5] for k in range(5)], [f"$x_{n} " for n in range(1, 6)])
         self.assertEqual(len(vision.requests), 3)           # boards 1-4, board 5, board 2 again
 
     def test_falls_back_to_the_next_model(self):
@@ -153,11 +164,28 @@ class StageTest(unittest.TestCase):
         self.assertEqual([n["n"] for n in notes], [1, 3])      # board 2 had nothing readable
         entry = scene.reopened().get("7")
         self.assertEqual((entry["status"], entry["pages"], entry["in_summary"]), ("ok", 3, False))
-        blob = crypto_box.decrypt((Path(scene.dir.name) / f"{entry['file']}.enc").read_bytes(), PASSWORD)
-        manifest, images = board_store.unpack(blob)
-        self.assertEqual((len(images), manifest["pages"][1]["text"]), (3, "（无可读内容）"))
+        manifest, images = scene.reopened().load_pages("7")
+        self.assertEqual((len(images), [p["n"] for p in manifest["pages"]]), (3, [1, 2, 3]))
         self.assertEqual(scene.stage.notes_for(object(), "100", "7", "课"), notes)
         self.assertEqual(scene.captures, 1)
+
+    def test_a_reading_cut_short_is_finished_later_without_capturing_again(self):
+        scene = Scene(self, count=10, vision=Vision(quota=1))          # boards 1-4, then 429
+        self.assertIsNone(scene.stage.notes_for(object(), "100", "7", "课"))
+        entry = scene.reopened().get("7")
+        self.assertEqual((entry["status"], sorted(entry["texts"], key=int)), ("unread", ["0", "1", "2", "3"]))
+        # the same run does not touch boards again
+        self.assertIsNone(scene.stage.notes_for(object(), "100", "8", "课"))
+        self.assertEqual((scene.captures, scene.reopened().get("8")["status"]), (1, "pending"))
+
+        later = Scene(self, count=10, directory=scene.dir)             # the next run
+        notes = later.stage.notes_for(object(), "100", "7", "课")
+        self.assertEqual([n["n"] for n in notes], list(range(1, 11)))
+        self.assertEqual((later.captures, later.reopened().get("7")["status"]), (0, "ok"))
+        shown = [n for _, messages in later.vision.requests if not isinstance(messages[-1]["content"], str)
+                 for part in messages[-1]["content"] if part["type"] == "text"
+                 for n in re.findall(r"^板书 (\d+)，", part["text"])]
+        self.assertEqual(shown, ["5", "6", "7", "8", "9", "10"])      # only what was missing
 
     def test_other_courses_are_left_alone(self):
         scene = Scene(self)
@@ -279,11 +307,12 @@ class BackfillTest(unittest.TestCase):
         rows = {str(k): {"summary": SUMMARY, "transcript": "speech " * 50} for k in (1, 2)}
         scene = Scene(self, vision=Vision(broken_models=("model-a", "model-b")))
         self.assertIsNone(scene.stage.notes_for(object(), "100", "1", "课"))     # no model answering
-        scene.vision.broken_models = ()
-        saved = self.run_backfill(scene, lectures, rows)                         # backfill_per_run is 0
+        self.assertEqual(self.run_backfill(scene, lectures, rows), {})           # nor later in that run
+        later = Scene(self, directory=scene.dir)                                 # backfill_per_run is 0
+        saved = self.run_backfill(later, lectures, rows)
         self.assertEqual(sorted(saved), ["1"])
-        self.assertTrue(scene.reopened().get("1")["in_summary"])
-        self.assertIsNone(scene.reopened().get("2"))
+        self.assertTrue(later.reopened().get("1")["in_summary"])
+        self.assertIsNone(later.reopened().get("2"))
 
 
 if __name__ == "__main__":
