@@ -21,7 +21,8 @@ BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 # marked 31 places as unreadable; gemini-3.6-flash marked one, and turned
 # 1,740,032 into 1,760,032, which the summary then repeated.  A weaker model is
 # therefore not a fallback: when these do not answer, the lecture waits for a
-# later run.
+# later run.  The free tier allows 20 requests a day per model, failed ones
+# included; a lecture of 22 boards takes 6.
 MODELS = "gemini-4-hydrogen,gemini-3.8-flash"
 BATCH = 4
 EMPTY = "（无可读内容）"
@@ -57,7 +58,8 @@ def _quota(exc: Exception) -> str:
 
 
 def _transient(exc: Exception) -> bool:
-    if getattr(exc, "status_code", None) in (429, 500, 502, 503, 504):
+    """Worth one more try.  Not a 429: on the free tier that is the daily quota."""
+    if getattr(exc, "status_code", None) in (500, 502, 503, 504):
         return True
     return any(word in type(exc).__name__ for word in ("Timeout", "Connection"))
 
@@ -156,7 +158,7 @@ class BoardReader:
                             f"板书 {k + 1}，写于 {clock(page['first_ms'])}–{clock(page['last_ms'])}。"
                             f"同一时段的录音转写（可能有识别错误）：\n{page.get('context') or '（无）'}"})
             content.append({"type": "image_url", "image_url": {"url": encode(page["image"])}})
-        for attempt in (1, 2, 3):
+        for attempt in (1, 2):                      # failed requests count against the quota too
             try:
                 response = self._api().chat.completions.create(
                     model=model, timeout=180,
@@ -164,7 +166,7 @@ class BoardReader:
                               {"role": "user", "content": content}])
                 break
             except Exception as exc:
-                if attempt == 3 or not _transient(exc):
+                if attempt == 2 or not _transient(exc):
                     raise
-                time.sleep(self.retry_wait * attempt)
+                time.sleep(self.retry_wait)
         return parse(response.choices[0].message.content or "", chunk)
