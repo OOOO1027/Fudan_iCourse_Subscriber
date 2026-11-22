@@ -151,8 +151,6 @@ class ReaderTest(unittest.TestCase):
     def test_falls_back_to_the_next_model(self):
         vision = Vision(broken_models=("model-a",))
         reader = BoardReader(vision, ["model-a", "model-b"], pause=0)
-        self.assertTrue(reader.preflight())
-        self.assertEqual(reader.models, ["model-b", "model-a"])
         self.assertEqual(reader.read("课", [{"image": pages(1)[0].image, "first_ms": 0, "last_ms": 1}])[1],
                          "gemini/model-b")
 
@@ -201,7 +199,7 @@ class StageTest(unittest.TestCase):
             self.assertIsNone(scene.stage.notes_for(object(), "100", "7", "课"))
         entry = scene.reopened().get("7")
         self.assertEqual((entry["status"], entry["attempts"]), ("failed", 3))
-        self.assertEqual(len(scene.vision.requests), 3)        # one check per attempt, none after
+        self.assertEqual(scene.vision.requests, [])
 
     def test_a_replay_that_is_not_out_yet_does_not_count_as_a_failure(self):
         def capture(client, course_id, sub_id, log=print):
@@ -211,13 +209,17 @@ class StageTest(unittest.TestCase):
         self.assertIsNone(scene.stage.notes_for(object(), "100", "7", "课"))
         self.assertIsNone(scene.reopened().get("7"))
 
-    def test_nothing_is_captured_when_no_model_answers_or_time_is_up(self):
+    def test_pages_are_kept_when_no_model_answers(self):
         scene = Scene(self, vision=Vision(broken_models=("model-a", "model-b")))
         self.assertIsNone(scene.stage.notes_for(object(), "100", "7", "课"))
+        entry = scene.reopened().get("7")
+        self.assertEqual((scene.captures, entry["status"], entry["texts"]), (1, "unread", {}))
+        self.assertEqual(len(scene.reopened().load_pages("7")[1]), 3)
+
+    def test_nothing_is_captured_when_time_is_up(self):
         late = Scene(self, deadline_s=-1)
         self.assertIsNone(late.stage.notes_for(object(), "100", "7", "课"))
-        self.assertEqual((scene.captures, late.captures), (0, 0))
-        self.assertEqual(scene.reopened().get("7")["status"], "pending")
+        self.assertEqual((late.captures, late.reopened().get("7")["status"]), (0, "pending"))
 
     def test_speech_during_a_board(self):
         segments = [{"start_ms": k * 60_000, "end_ms": k * 60_000 + 50_000, "text": f"s{k}"} for k in range(10)]

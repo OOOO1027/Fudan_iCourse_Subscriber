@@ -298,11 +298,9 @@ class BoardStage:
         if attempts >= MAX_ATTEMPTS and not unread:
             return None
         late = time.monotonic() - self.started > self.deadline_s
-        if not late and not self.reader_down and not self.reader.preflight():
-            self.reader_down = True
         if late or self.reader_down:
             self.log(f"    [Boards] {sub_id}: left for a later run, "
-                     f"{'this one has gone on too long' if late else 'no vision model is answering'}.")
+                     f"{'this one has gone on too long' if late else 'the vision models stopped answering'}.")
             if entry is None:                 # so that backfill() comes back to it
                 self.store.set(sub_id, {
                     "course_id": course_id, "status": "pending", "attempts": 0, "version": VERSION,

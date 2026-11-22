@@ -105,28 +105,6 @@ class BoardReader:
                 base_url=os.environ.get("GEMINI_BASE_URL", "").strip() or BASE_URL)
         return self._client
 
-    def preflight(self) -> bool:
-        """Is a model answering right now?  Asked before the twenty minutes of
-        frame sampling; the first model that answers goes to the front."""
-        if not self.available():
-            return False
-        for model in list(self.models):
-            for attempt in (1, 2, 3):             # these models often answer 503 for a moment
-                try:
-                    self._api().chat.completions.create(
-                        model=model, messages=[{"role": "user", "content": "Reply with OK."}],
-                        timeout=60)
-                except Exception as exc:
-                    print(f"[Boards] {model} is not answering: {_kind(exc)}", flush=True)
-                    if attempt == 3 or not _transient(exc):
-                        break
-                    time.sleep(self.retry_wait * attempt)
-                    continue
-                self.models.remove(model)
-                self.models.insert(0, model)
-                return True
-        return False
-
     def read(self, title: str, pages: list[dict],
              have: dict[int, str] | None = None) -> tuple[dict[int, str], str]:
         """pages: [{"image": PIL image, "first_ms", "last_ms", "context"}].
@@ -142,7 +120,9 @@ class BoardReader:
             try:
                 self._read_with(model, title, pages, texts)
             except Exception as exc:
-                detail = f": {str(exc)[:300]}" if getattr(exc, "status_code", None) == 429 else ""
+                # A 429 says which quota ran out; long digit runs (project numbers) are cut.
+                detail = (": " + re.sub(r"\d{8,}", "…", str(exc))[:700]
+                          if getattr(exc, "status_code", None) == 429 else "")
                 print(f"[Boards] {model} stopped after {len(texts)} of {len(pages)} boards: "
                       f"{_kind(exc)}{detail}", flush=True)
             if len(texts) > before:
