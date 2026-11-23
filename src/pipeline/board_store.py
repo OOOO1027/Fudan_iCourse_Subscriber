@@ -5,6 +5,8 @@ The store is a directory that scripts/board_branch.sh mirrors to boards/ on the
 
     index.enc    JSON, one entry per lecture: state and the reading of each board
     <name>.enc   one lecture's page images with their positions and times
+    <name>.summary.enc   the summary a lecture had before it was rewritten
+                         with boards (JSON), kept so that it can be put back
     *.rev        the same two, encrypted to scripts/board_review_key.pub
 
 .enc files use the database's password (src/data/crypto_box.py), so whoever can
@@ -103,6 +105,11 @@ class BoardStore:
         name = self.name(sub_id)
         self._write(name, pack(manifest, images))
         return name
+
+    def put_summary(self, sub_id, summary: str, model: str | None) -> None:
+        self._write(f"{self.name(sub_id)}.summary", json.dumps(
+            {"sub_id": str(sub_id), "summary": summary, "summary_model": model},
+            ensure_ascii=False).encode())
 
     def load_pages(self, sub_id) -> tuple[dict, list[bytes]] | None:
         """A lecture's stored pages: from this directory if they were written

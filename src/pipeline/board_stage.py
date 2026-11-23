@@ -12,7 +12,7 @@ A lecture whose boards could not be done in time (no vision model answering,
 a quota spent halfway through the reading, a failed capture) is summarised
 without them and marked in the store; backfill() does it in a later run,
 reading on from the pages and readings already stored, and summarises it again
-from the stored transcript.  backfill() also takes up to BOARD_BACKFILL_PER_RUN lectures per
+from the stored transcript.  The summary it replaces is kept in the store.  backfill() also takes up to BOARD_BACKFILL_PER_RUN lectures per
 run, newest first, that were summarised before boards were switched on.
 
 Nothing here may stop a lecture from being summarised.  notes_for(),
@@ -432,6 +432,11 @@ class BoardStage:
                     prompt, _ = bucketer.assemble(row["transcript"], None, db.get_done_ppt_pages(sub_id))
                     summary, model = summarizer.summarize(
                         detail["title"], prompt_with_boards(prompt, notes))
+                    entry = self._usable(sub_id)
+                    if not entry.get("kept_summary"):    # the one written without boards, once
+                        self.store.put_summary(sub_id, row["summary"], row.get("summary_model"))
+                        self.store.set(sub_id, {**entry, "kept_summary": True})
+                        self.store.save()
                     db.update_summary(sub_id, summary_with_boards(summary, notes), model)
                     self.log(f"    [Boards] {sub_id}: summary rewritten with {len(notes)} board(s) by {model}.")
                 self.mark_in_summary(sub_id)

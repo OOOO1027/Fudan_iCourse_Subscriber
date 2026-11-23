@@ -1,5 +1,6 @@
 """Board pages from capture to summary, with the replay, the vision model and
 the summariser replaced by stand-ins."""
+import json
 import re
 import tempfile
 import unittest
@@ -295,6 +296,10 @@ class BackfillTest(unittest.TestCase):
         saved = self.run_backfill(scene, lectures, rows)
         self.assertEqual(sorted(saved), ["2", "3"])
         self.assertIn("### 板书记录", saved["3"])
+        store = scene.reopened()                                # the summary it replaced is kept
+        kept = json.loads(crypto_box.decrypt(
+            (Path(scene.dir.name) / f"{store.name('3')}.summary.enc").read_bytes(), PASSWORD))
+        self.assertEqual((kept["summary"], store.get("3")["kept_summary"]), (SUMMARY, True))
         self.assertEqual(sorted(self.run_backfill(scene, lectures, rows)), ["1"])
         self.assertEqual(self.run_backfill(scene, lectures, rows), {})
         self.assertEqual(scene.captures, 3)
