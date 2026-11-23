@@ -150,7 +150,7 @@ class Replay:
             for k, sheet in enumerate(strips(times, paths)):
                 sheet.save(self.review / f"strip-{k + 1}.jpg", quality=80)
             # Block-level board and chalk masks (not images) for offline work on the tracker.
-            np.savez_compressed(self.review / "features.npz", F=extractor.F & 7,
+            np.savez_compressed(self.review / "features.npz", F=np.stack(extractor.feats) & 7,
                                 times=np.asarray(times))
 
         self.pages, self.report = board_stage.capture(client, course_id, sub_id, log=log,

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.Hash import SHA256
@@ -229,6 +230,32 @@ class StageTest(unittest.TestCase):
         flat = "".join(str(k) * 100 for k in range(10))
         cut = board_stage.speech_during(flat, None, 300_000, 400_000, 1_000_000)
         self.assertEqual(set(cut), {"2", "3", "4"})             # 3xx with a little slack either side
+
+
+class SamplingTest(unittest.TestCase):
+    def test_a_frame_announced_but_not_written_is_sampled_again(self):
+        calls = []
+
+        def ffmpeg(stream, directory, start, done, interval, log):
+            calls.append((start, done))
+            if len(calls) == 1:               # five frames announced, killed while writing the fifth
+                for k in range(4):
+                    Image.new("RGB", (8, 8)).save(directory / f"sample-{k + 1:05d}.png")
+                (directory / "sample-00005.png").write_bytes(b"\x89PNG\r\n\x1a\n cut short")
+                return [0.0, 5.0, 10.0, 15.0, 20.0], -9
+            seconds = list(range(int(start), 40, 5))
+            for k in range(len(seconds)):
+                Image.new("RGB", (8, 8)).save(directory / f"sample-{done + k + 1:05d}.png")
+            return [float(t) for t in seconds], 0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(board_stage, "_sample_from", ffmpeg), \
+                mock.patch.object(board_stage.time, "sleep", lambda seconds: None):
+            times, paths, restarts = board_stage.sample_frames(
+                None, Path(directory), duration=55, interval=5, log=lambda message: None)
+            self.assertEqual(times, [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0])
+            self.assertEqual((calls, restarts), ([(0.0, 0), (20.0, 4)], 1))
+            self.assertTrue(all(board_stage._whole(path) for path in paths))
 
 
 class SummaryTest(unittest.TestCase):

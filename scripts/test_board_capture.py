@@ -180,6 +180,22 @@ class BoardCaptureTest(unittest.TestCase):
         pages, report = run(frames)
         self.assertEqual(len(pages), 1, report)
 
+    def test_two_small_corrections_a_window_apart(self):
+        # Each is below a page's size and together they are not; the samples
+        # between them then count as a loss with no event of its own.
+        board = Board((40, 40, 360, 200), seed=5)
+        frames = []
+        for i in range(80):
+            if i < 15 and i % 3 == 0:
+                board.write()
+            if i == 30:
+                board.wipe(100, 148)
+            if i == 36:
+                board.wipe(220, 268)
+            frames.append(render([board], teacher_x=450, seed=i))
+        pages, report = run(frames)
+        self.assertEqual(len(pages), 1, report)
+
     def test_two_panels_wiped_together_are_two_pages(self):
         upper, lower = Board((40, 30, 360, 160), seed=6), Board((40, 172, 360, 300), seed=7)
         frames = []

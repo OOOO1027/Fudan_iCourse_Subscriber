@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,9 +43,12 @@ from src.data import crypto_box
 from src.pipeline.board_store import BoardStore
 from src.runtime import config
 
-VERSION = 1          # of what is stored per lecture; raise it to redo every lecture
+# Of what is stored per lecture; raise it to redo every lecture.  2: the lecture
+# of 2026-11-18 was given up after three failures that were bugs here.
+VERSION = 2
 MAX_ATTEMPTS = 3     # failed captures of one lecture before it is left alone
 INTERVAL = 5.0       # seconds between sampled frames
+STALL = 180          # seconds without a new frame before a stream counts as stuck
 RECORD_HEADING = "### 板书记录"
 
 GUIDE = (
@@ -100,13 +104,22 @@ def _sample_from(stream, directory, start, done, interval, log):
            f"setpts=PTS-STARTPTS,select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval})',showinfo",
            "-fps_mode", "vfr", "-start_number", str(done + 1), str(directory / "sample-%05d.png")]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    timer = threading.Timer(3600, proc.kill)
-    timer.start()
+    beat = [time.monotonic()]
+
+    def watch():                                   # the stream can hang without closing
+        while proc.poll() is None:
+            if time.monotonic() - beat[0] > STALL:
+                proc.kill()
+                return
+            time.sleep(5)
+
+    threading.Thread(target=watch, daemon=True).start()
     times = []
     try:
         for line in proc.stderr:
             match = re.search(rb"Parsed_showinfo.*\bn:\s*\d+.*pts_time:([\d.]+)", line)
             if match:
+                beat[0] = time.monotonic()
                 times.append(start + float(match.group(1)))
                 if (done + len(times)) % 400 == 0:
                     log(f"    [Boards] sampled {done + len(times)} frames, at {clock(times[-1] * 1000)}")
@@ -114,32 +127,43 @@ def _sample_from(stream, directory, start, done, interval, log):
                         raise RuntimeError("Scratch disk nearly full")
         code = proc.wait()
     finally:
-        timer.cancel()
         if proc.poll() is None:
             proc.kill()
         proc.wait()
     return times, code
 
 
+def _whole(path) -> bool:
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        return True
+    except Exception:
+        return False
+
+
 def sample_frames(stream, directory, duration, interval=INTERVAL, log=print):
     """One PNG every `interval` seconds of the replay.  `stream()` returns a
-    freshly signed (url, headers).  The gateway can close the stream early and
-    ffmpeg then exits cleanly, so resume after the last frame until the whole
-    lecture is covered."""
+    freshly signed (url, headers).  The gateway can close the stream early, and
+    ffmpeg then exits cleanly, or leave it hanging, and ffmpeg is then killed:
+    either way sampling resumes after the last frame that was written whole."""
     times, restarts = [], 0
     while not times or times[-1] < duration - 2 * interval - 10:
         start = times[-1] + interval if times else 0.0
         got, code = _sample_from(stream, directory, start, len(times), interval, log)
         times += got
+        # A stopped ffmpeg may have announced frames it never finished writing.
+        while times and not _whole(directory / f"sample-{len(times):05d}.png"):
+            times.pop()
         if not got or code:
             restarts += 1
             log(f"    [Boards] stream stopped (exit {code}, {len(got)} new frames); attempt {restarts}")
             if restarts > 6:
                 raise RuntimeError("Frame sampling incomplete")
             time.sleep(10)
-    paths = sorted(directory.glob("sample-*.png"))[:len(times)]
-    if len(paths) != len(times):
-        raise RuntimeError(f"Frame files and timestamps disagree: {len(paths)} vs {len(times)}")
+    paths = [directory / f"sample-{k + 1:05d}.png" for k in range(len(times))]
+    if not all(path.exists() for path in paths):
+        raise RuntimeError("Sampled frames are missing")
     return times, paths, restarts
 
 
@@ -166,15 +190,23 @@ def capture(client, course_id, sub_id, interval=INTERVAL, log=print, inspect=Non
         extractor = BoardExtractor(load)
         for i, t in enumerate(times):
             extractor.add(load(i), round(t * 1000))
-        pages, report = extractor.finish()
-        if inspect:
+        if inspect:                       # before finish(), which is where a new lecture breaks
             inspect(times, paths, extractor)
+        pages, report = extractor.finish()
     report.update({
         "duration_ms": round(duration * 1000), "stream_restarts": restarts,
         "video": {k: video.get(k) for k in ("codec_name", "width", "height", "avg_frame_rate",
                                             "bit_rate", "duration")},
         "seconds": {"sampling": round(sampled - started), "extracting": round(time.time() - sampled)}})
     return pages, report
+
+
+def _where(exc: Exception) -> str:
+    """The innermost place in this repository an exception passed through.  The
+    message stays out of the public log (it can hold a signed URL); the store
+    keeps it."""
+    frames = [f for f in traceback.extract_tb(exc.__traceback__) if "/src/" in f.filename]
+    return f" at {Path(frames[-1].filename).name}:{frames[-1].lineno}" if frames else ""
 
 
 # ── Readings into the summary ─────────────────────────────────────────────
@@ -285,7 +317,7 @@ class BoardStage:
         except ReplayUnavailable:
             self.log(f"    [Boards] {sub_id}: replay is not available yet.")
         except Exception as exc:
-            self.log(f"    [Boards] {sub_id} failed: {type(exc).__name__}"
+            self.log(f"    [Boards] {sub_id} failed{_where(exc)}: {type(exc).__name__}"
                      f"{f': {exc}' if isinstance(exc, RuntimeError) else ''}")
         return None
 

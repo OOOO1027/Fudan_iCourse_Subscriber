@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 100
     env:
       BOARD_COURSE_ID: "38985"
-      BOARD_SUB_ID: "693743"
+      BOARD_SUB_ID: "710074"
 
     steps:
       - uses: actions/checkout@v4

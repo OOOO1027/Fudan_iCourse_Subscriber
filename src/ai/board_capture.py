@@ -375,6 +375,10 @@ class BoardExtractor:
                 if losses and a - losses[-1][5] <= self._samples(45):
                     a = losses.pop()[4]
                 ev = [e for e in s.events if a <= e[0] < b]
+                if not ev:
+                    # Two small losses a window apart make the samples between
+                    # them active while neither lies among them.
+                    ev = [e for e in s.events if a - win <= e[0] < b + win]
                 losses.append([*(np.concatenate([e[j] for e in ev]) for j in (1, 2, 3, 4)),
                                ev[0][0], ev[-1][0]])
             self.dropped += int(count[~active].sum())
