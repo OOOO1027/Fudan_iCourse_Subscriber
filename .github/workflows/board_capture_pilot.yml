@@ -33,13 +33,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 2026-10-28 (the lecture the extractor was built on) and 2026-11-18
-        sub: ["693743", "710074"]
+        # 2026-10-28, the lecture the extractor was built on: extraction only,
+        # as a check that nothing changed.  2026-11-18: read and summarised too.
+        include:
+          - sub: "693743"
+            skip_reading: "1"
+          - sub: "710074"
+            skip_reading: ""
     env:
       BOARD_COURSE_ID: "38985"
       BOARD_SUB_ID: ${{ matrix.sub }}
-      # Set while only the extraction is being worked on: no vision requests.
-      BOARD_SKIP_READING: "1"
+      BOARD_SKIP_READING: ${{ matrix.skip_reading }}
 
     steps:
       - uses: actions/checkout@v4

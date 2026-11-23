@@ -210,6 +210,17 @@ def main():
                                capture_fn=replay)
             t0 = time.time()
             notes = stage.notes_for(None, COURSE, SUB, title or "课程", transcript)
+            # The vision models often answer 503 for a while.  What the scheduled
+            # check does over several runs is done here in rounds: each goes on
+            # from the pages and readings the last one stored.
+            for attempt in range(4):
+                if notes is not None or SKIP_READING or (store.get(SUB) or {}).get("status") != "unread":
+                    break
+                print(f"Reading stopped short; round {attempt + 2} in 90 s.", flush=True)
+                time.sleep(90)
+                stage = BoardStage(store, reader, [COURSE], lambda m: print(m, flush=True),
+                                   capture_fn=replay)
+                notes = stage.notes_for(None, COURSE, SUB, title or "课程", transcript)
             t_boards = time.time() - t0
             pages = sorted(replay.pages, key=lambda p: p.first_ms)   # the stage's numbering
             report = dict(replay.report)
