@@ -321,6 +321,13 @@ class BoardStage:
                      f"{f': {exc}' if isinstance(exc, RuntimeError) else ''}")
         return None
 
+    def _set(self, sub_id, entry: dict) -> None:
+        """Store an entry.  That the lecture's first summary is kept carries
+        over from whatever entry it had, of any version: it is kept only once."""
+        if (self.store.get(sub_id) or {}).get("kept_summary"):
+            entry = {**entry, "kept_summary": True}
+        self.store.set(sub_id, entry)
+
     def _notes_for(self, client, course_id, sub_id, title, transcript, segments):
         entry = self._usable(sub_id)
         if entry and entry["status"] == "ok":
@@ -334,7 +341,7 @@ class BoardStage:
             self.log(f"    [Boards] {sub_id}: left for a later run, "
                      f"{'this one has gone on too long' if late else 'the vision models stopped answering'}.")
             if entry is None:                 # so that backfill() comes back to it
-                self.store.set(sub_id, {
+                self._set(sub_id, {
                     "course_id": course_id, "status": "pending", "attempts": 0, "version": VERSION,
                     "updated": datetime.now().isoformat(timespec="seconds")})
                 self.store.save()
@@ -356,7 +363,7 @@ class BoardStage:
             except ReplayUnavailable:
                 raise
             except Exception as exc:
-                self.store.set(sub_id, {
+                self._set(sub_id, {
                     "course_id": course_id, "status": "failed", "attempts": attempts + 1,
                     "version": VERSION, "updated": datetime.now().isoformat(timespec="seconds"),
                     "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
@@ -385,7 +392,7 @@ class BoardStage:
                                      report.get("duration_ms"))} for p in pages], have) if pages else ({}, "")
         if len(texts) < len(pages):           # quota spent or models down: go on from here next run
             self.reader_down = True
-            self.store.set(sub_id, {**base, "status": "unread",
+            self._set(sub_id, {**base, "status": "unread",
                                     "texts": {str(k): text for k, text in texts.items()}})
             self.store.save()
             self.log(f"    [Boards] {sub_id}: {len(texts)} of {len(pages)} boards read; "
@@ -394,7 +401,7 @@ class BoardStage:
         notes = [{"n": k + 1, "first_ms": page.first_ms, "last_ms": page.last_ms,
                   "lost_ms": page.lost_ms, "text": texts[k]}
                  for k, page in enumerate(pages) if texts[k].strip() and texts[k].strip() != EMPTY]
-        self.store.set(sub_id, {**base, "status": "ok", "reader": model, "in_summary": False,
+        self._set(sub_id, {**base, "status": "ok", "reader": model, "in_summary": False,
                                 "notes": notes})
         self.store.save()
         self.log(f"    [Boards] {sub_id}: {len(pages)} board(s) read by {model or 'nobody'}, "
@@ -464,7 +471,7 @@ class BoardStage:
                     prompt, _ = bucketer.assemble(row["transcript"], None, db.get_done_ppt_pages(sub_id))
                     summary, model = summarizer.summarize(
                         detail["title"], prompt_with_boards(prompt, notes))
-                    entry = self._usable(sub_id)
+                    entry = self.store.get(sub_id)
                     if not entry.get("kept_summary"):    # the one written without boards, once
                         self.store.put_summary(sub_id, row["summary"], row.get("summary_model"))
                         self.store.set(sub_id, {**entry, "kept_summary": True})

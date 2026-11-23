@@ -35,6 +35,10 @@ TILE = 8                  # blocks per composition tile
 HUE = (67, 147)           # PIL hue units, 95-208 degrees: dim green to lit teal
 SAT_MIN = 21
 VAL = (31, 214)
+# A board in bright light is strongly green; a wall in coloured light (a blue
+# slide on the projector) is pale.  From value 110 the saturation asked for
+# rises, to 50 at 140 and above.
+SAT_NEED = np.interp(np.arange(256), [110, 140], [SAT_MIN, 50])
 INK_LO, INK_HI = 5, 9     # gray levels above the local background
 BRD, LO, HI = 1, 2, 4
 PAD = 140                 # blocks a sheet may travel from where it was first seen
@@ -48,6 +52,11 @@ def frame_features(rgb: np.ndarray) -> np.ndarray:
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     green = ((h >= HUE[0]) & (h <= HUE[1]) & (s >= SAT_MIN)
              & (v >= VAL[0]) & (v <= VAL[1]))
+    # Chalk and the halo around it are pale as well, so the stricter test is
+    # put to a neighbourhood, not to a pixel: 17 px across, two fifths of it.
+    vivid = green & (s >= SAT_NEED[v])
+    green &= np.asarray(Image.fromarray(vivid.astype(np.uint8) * 255)
+                        .filter(ImageFilter.BoxBlur(8))) >= 102
     # Chalk strokes are not green.  Closing fills gaps under 5 px; the frames
     # between panels are wider and stay open.
     closed = (Image.fromarray(green.astype(np.uint8) * 255)
@@ -84,18 +93,31 @@ def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(edges[::2].tolist(), edges[1::2].tolist()))
 
 
+def _tallest_run(mask: np.ndarray) -> np.ndarray:
+    """Per column, the length of its longest vertical run of True."""
+    best = np.zeros(mask.shape[1], int)
+    run = np.zeros(mask.shape[1], int)
+    for row in mask:
+        run = np.where(row, run + 1, 0)
+        best = np.maximum(best, run)
+    return best
+
+
 def panels(board: np.ndarray, columns: np.ndarray, ink: np.ndarray,
-           min_w: int = 24, min_h: int = 12) -> list[tuple]:
+           min_w: int = 24, min_h: int = 12, min_run: int = 24) -> list[tuple]:
     """Visible panels (x0, y0, x1, y1): columns of board, split at the frames between panels.
 
     `columns` is the board mask of the last minute or so: someone standing in
-    front of a panel must not split its column in two.  The frame between two
+    front of a panel must not split its column in two.  A column of the image
+    belongs to a column of boards only if it holds a tall unbroken run of
+    board: patches of board colour in the wall between two columns, which add
+    up over a minute, must not join them.  The frame between two
     panels can pass for board in part when it reflects one; it is then a
     bright line across a row that is not all board, which a line of
     handwriting never is.
     """
     out = []
-    for x0, x1 in _runs(columns.sum(axis=0) >= min_h):
+    for x0, x1 in _runs(_tallest_run(columns) >= min_run):
         if x1 - x0 < min_w:
             continue
         share = board[:, x0:x1].mean(axis=1)

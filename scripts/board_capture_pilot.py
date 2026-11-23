@@ -37,6 +37,7 @@ from src.runtime import config
 COURSE = os.environ.get("BOARD_COURSE_ID", "38985")
 SUB = os.environ.get("BOARD_SUB_ID", "693743")
 INTERVAL = board_stage.INTERVAL
+SKIP_READING = bool(os.environ.get("BOARD_SKIP_READING"))
 
 
 def describe_sources(client):
@@ -198,11 +199,8 @@ def main():
         review = Path(review)
         try:
             reader = BoardReader()
-            try:
-                listed = sorted(m.id for m in reader._api().models.list())
-                print("Models the key can use:", ", ".join(listed), flush=True)
-            except Exception as exc:
-                print("Model list unavailable:", type(exc).__name__, flush=True)
+            if SKIP_READING:                  # a run about extraction only: spend no vision quota
+                reader.models = []
 
             (Path(store_dir) / board_store.READY).write_text("none")
             store = BoardStore(store_dir, password,
@@ -270,7 +268,7 @@ def main():
     if summary_info:
         print("Summary with boards:", summary_info, flush=True)
     print(f"Bundle {size / 1024 ** 2:.1f} MB", flush=True)
-    if entry.get("status") != "ok":
+    if entry.get("status") != "ok" and not (SKIP_READING and entry.get("status") == "unread"):
         raise SystemExit("Board stage did not finish; see the review bundle.")
 
 
