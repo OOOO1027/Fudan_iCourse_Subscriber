@@ -22,7 +22,7 @@ BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 # 1,740,032 into 1,760,032, which the summary then repeated.  A weaker model is
 # therefore not a fallback: when these do not answer, the lecture waits for a
 # later run.  The free tier allows 20 requests a day per model, failed ones
-# included; a lecture of 22 boards takes 6.
+# included, and answers 503 for long stretches; a lecture of 22 boards takes 6.
 MODELS = "gemini-4-hydrogen,gemini-3.8-flash"
 BATCH = 4
 EMPTY = "（无可读内容）"
@@ -57,13 +57,6 @@ def _quota(exc: Exception) -> str:
     return re.sub(r"\d{8,}", "…", str(body))[:900]
 
 
-def _transient(exc: Exception) -> bool:
-    """Worth one more try.  Not a 429: on the free tier that is the daily quota."""
-    if getattr(exc, "status_code", None) in (500, 502, 503, 504):
-        return True
-    return any(word in type(exc).__name__ for word in ("Timeout", "Connection"))
-
-
 def encode(image: Image.Image) -> str:
     """Pages are about 560x280; enlarged so the model spends more detail on them."""
     scale = min(3.0, 2048 / max(image.size))
@@ -94,12 +87,10 @@ def parse(answer: str, wanted: list[int]) -> dict[int, str]:
 
 
 class BoardReader:
-    def __init__(self, client=None, models: list[str] | None = None, pause: float = 4.0,
-                 retry_wait: float = 20.0):
+    def __init__(self, client=None, models: list[str] | None = None, pause: float = 4.0):
         self.models = models or [m.strip() for m in (os.environ.get(
             "BOARD_VISION_MODELS", "").strip() or MODELS).split(",") if m.strip()]
         self.pause = pause                # between requests
-        self.retry_wait = retry_wait      # before asking again after a 429 / 5xx / timeout
         self._client = client
         self._key = os.environ.get("GEMINI_API_KEY", "").strip()
 
@@ -158,15 +149,11 @@ class BoardReader:
                             f"板书 {k + 1}，写于 {clock(page['first_ms'])}–{clock(page['last_ms'])}。"
                             f"同一时段的录音转写（可能有识别错误）：\n{page.get('context') or '（无）'}"})
             content.append({"type": "image_url", "image_url": {"url": encode(page["image"])}})
-        for attempt in (1, 2):                      # failed requests count against the quota too
-            try:
-                response = self._api().chat.completions.create(
-                    model=model, timeout=180,
-                    messages=[{"role": "system", "content": SYSTEM},
-                              {"role": "user", "content": content}])
-                break
-            except Exception as exc:
-                if attempt == 2 or not _transient(exc):
-                    raise
-                time.sleep(self.retry_wait)
+        # Asked once.  A request that fails still counts against the day's quota,
+        # and on 2026-11-23 a second try after a 503 failed every time; the
+        # next run goes on from here instead.
+        response = self._api().chat.completions.create(
+            model=model, timeout=180,
+            messages=[{"role": "system", "content": SYSTEM},
+                      {"role": "user", "content": content}])
         return parse(response.choices[0].message.content or "", chunk)

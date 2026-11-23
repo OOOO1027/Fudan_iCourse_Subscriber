@@ -91,7 +91,7 @@ class Scene:
 
         self.stage = BoardStage(
             open_store(self.dir.name),
-            BoardReader(self.vision, ["model-a", "model-b"], pause=0, retry_wait=0),
+            BoardReader(self.vision, ["model-a", "model-b"], pause=0),
             ["100"], self.log.append, capture_fn=capture or default_capture, **options)
 
     def reopened(self):
