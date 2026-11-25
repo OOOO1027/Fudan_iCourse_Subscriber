@@ -186,11 +186,58 @@ def lecture_from_database():
     return (course["title"] if course else ""), row, db.get_done_ppt_pages(SUB)
 
 
+PROBE_MODELS = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash",
+                "gemini-2.5-flash-lite"]
+
+
+def probe(output, password):
+    """Which vision models answer right now, and how each reads the same two
+    boards.  Error bodies go to the public log (they are the provider's
+    message, with long digit runs cut); the readings go to the bundle."""
+    from src.ai.board_reader import _kind, _quota
+    reader = BoardReader()
+    api = reader._api()
+    try:
+        print("Models the key lists:", ", ".join(sorted(m.id for m in api.models.list())), flush=True)
+    except Exception as exc:
+        print("Model list unavailable:", _kind(exc), flush=True)
+    with tempfile.TemporaryDirectory(prefix="board-probe-") as review:
+        review = Path(review)
+        pages, _ = Replay(review, password)(None, COURSE, SUB)
+        pages = sorted(pages, key=lambda p: p.first_ms)
+        picks = [k for k in (2, 12) if k < len(pages)]
+        shown = [{"image": p.image, "first_ms": p.first_ms, "last_ms": p.last_ms, "context": ""}
+                 for p in pages]
+        for model in PROBE_MODELS:
+            for kind in ("text", "boards"):
+                t0 = time.time()
+                try:
+                    if kind == "text":
+                        api.chat.completions.create(
+                            model=model, timeout=60,
+                            messages=[{"role": "user", "content": "Reply with OK."}])
+                        size = ""
+                    else:
+                        texts = reader._ask(model, "课程", shown, picks)
+                        (review / f"{model}.md").write_text("\n\n".join(
+                            f"## 板书 {k + 1}\n\n{texts.get(k, '(missing)')}" for k in picks))
+                        size = f", {sum(map(len, texts.values()))} chars for {len(texts)} of {len(picks)} boards"
+                    print(f"PROBE {model} {kind}: ok in {time.time() - t0:.0f}s{size}", flush=True)
+                except Exception as exc:
+                    print(f"PROBE {model} {kind}: {_kind(exc)} after {time.time() - t0:.0f}s: "
+                          f"{_quota(exc)[:420]}", flush=True)
+                time.sleep(3)
+        encrypt_bundle(review, output / "bundle.bin")
+
+
 def main():
     output = Path(os.environ["BOARD_OUTPUT"])
     output.mkdir(parents=True, exist_ok=True)
     started = time.time()
     password = crypto_box.derive_new_password(config.STUDENT_ID, config.PASSWORD)
+    if os.environ.get("BOARD_PROBE"):
+        return probe(output, password)
     title, row, ppt_pages = lecture_from_database()
     transcript = row.get("transcript") or ""
 

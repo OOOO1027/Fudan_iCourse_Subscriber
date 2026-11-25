@@ -38,12 +38,13 @@ jobs:
         include:
           - sub: "693743"
             skip_reading: "1"
-          - sub: "710074"
-            skip_reading: ""
+            probe: "1"
     env:
       BOARD_COURSE_ID: "38985"
       BOARD_SUB_ID: ${{ matrix.sub }}
       BOARD_SKIP_READING: ${{ matrix.skip_reading }}
+      # Set to ask every vision model for the same two boards instead of running the stage.
+      BOARD_PROBE: ${{ matrix.probe }}
 
     steps:
       - uses: actions/checkout@v4
