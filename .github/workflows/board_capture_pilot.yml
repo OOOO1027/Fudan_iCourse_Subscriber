@@ -39,7 +39,7 @@ jobs:
         # extractor was built on; 710074 is 2026-11-18.
         include:
           - sub: "710074"
-            skip_reading: ""
+            skip_reading: "1"
             probe: ""
     env:
       BOARD_COURSE_ID: "38985"

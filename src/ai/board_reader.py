@@ -24,13 +24,17 @@ BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 # could be checked was right and 31 places were marked unreadable.  But it and
 # gemini-3.8-flash answered 503 "experiencing high demand" to nearly every
 # request from 2026-11-23 to 11-26, and no lecture was read in that time.  The
-# three after them answered throughout.  On two checked boards they got the
+# two after them answer more often.  On two checked boards they got the
 # layout, the formulas and the tables right and one handwritten digit wrong,
-# all of them the same way (1,740,032 as 1,760,032) and without marking it, so
-# the summary is told to recompute what a board lets it recompute.
-# gemini-2.5-flash is left out: from 2026-12-01 it routes to
-# gemini-3.5-flash-lite, which returned nothing for the same boards.
-MODELS = "gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash,gemini-3-flash-preview,gemini-3.1-flash-lite"
+# both the same way (1,740,032 as 1,760,032) and without marking it, so the
+# summary is told to recompute what a board lets it recompute; a whole lecture
+# read by gemini-3-flash-preview (2026-11-18) matched its boards.
+#
+# No "lite" model: gemini-3.1-flash-lite answered in four seconds and returned
+# 81 characters for a board the model before it had read as 802, and
+# gemini-3.5-flash-lite returned nothing.  gemini-2.5-flash routes to the
+# latter from 2026-12-01.  When none of the four answers, the lecture waits.
+MODELS = "gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash,gemini-3-flash-preview"
 BATCH = 4
 EMPTY = "（无可读内容）"
 MARK = re.compile(r"^\s*<<<\s*板书\s*(\d+)\s*>>>\s*$", re.M)
