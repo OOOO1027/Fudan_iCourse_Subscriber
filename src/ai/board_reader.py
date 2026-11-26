@@ -16,14 +16,21 @@ import time
 from PIL import Image
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# Vision models with a free tier as of 2026-11.  On the lecture of 2026-10-28,
-# gemini-4-hydrogen read every figure that could be checked correctly and
-# marked 31 places as unreadable; gemini-3.6-flash marked one, and turned
-# 1,740,032 into 1,760,032, which the summary then repeated.  A weaker model is
-# therefore not a fallback: when these do not answer, the lecture waits for a
-# later run.  The free tier allows 20 requests a day per model, failed ones
-# included, and answers 503 for long stretches; a lecture of 22 boards takes 6.
-MODELS = "gemini-4-hydrogen,gemini-3.8-flash"
+# Vision models with a free tier as of 2026-11, tried in this order.  The free
+# tier allows 20 requests a day per model, failed ones included; a lecture of
+# 22 boards takes 6.
+#
+# gemini-4-hydrogen reads best: on the lecture of 2026-10-28 every figure that
+# could be checked was right and 31 places were marked unreadable.  But it and
+# gemini-3.8-flash answered 503 "experiencing high demand" to nearly every
+# request from 2026-11-23 to 11-26, and no lecture was read in that time.  The
+# three after them answered throughout.  On two checked boards they got the
+# layout, the formulas and the tables right and one handwritten digit wrong,
+# all of them the same way (1,740,032 as 1,760,032) and without marking it, so
+# the summary is told to recompute what a board lets it recompute.
+# gemini-2.5-flash is left out: from 2026-12-01 it routes to
+# gemini-3.5-flash-lite, which returned nothing for the same boards.
+MODELS = "gemini-4-hydrogen,gemini-3.8-flash,gemini-3.6-flash,gemini-3-flash-preview,gemini-3.1-flash-lite"
 BATCH = 4
 EMPTY = "（无可读内容）"
 MARK = re.compile(r"^\s*<<<\s*板书\s*(\d+)\s*>>>\s*$", re.M)
@@ -51,8 +58,9 @@ def _kind(exc: Exception) -> str:
 
 
 def _quota(exc: Exception) -> str:
-    """The body of a 429, which names the quota that ran out.  Long digit runs
-    (project numbers) are cut."""
+    """The provider's own words for a refusal: which quota ran out (429), or
+    that the model is overloaded (503).  Long digit runs (project numbers) are
+    cut."""
     body = getattr(exc, "body", None) or getattr(getattr(exc, "response", None), "text", "") or exc
     return re.sub(r"\d{8,}", "…", str(body))[:900]
 
@@ -109,10 +117,10 @@ class BoardReader:
              have: dict[int, str] | None = None) -> tuple[dict[int, str], str]:
         """pages: [{"image": PIL image, "first_ms", "last_ms", "context"}].
         Returns the readings by page index, those in `have` included, and the
-        model that produced the last of them.  When no model can go on (a
+        models that produced the new ones.  When no model can go on (a
         spent quota, an outage) the readings so far come back and the caller
         asks again another time with them as `have`."""
-        texts, used = dict(have or {}), ""
+        texts, used = dict(have or {}), []
         for model in self.models:
             if len(texts) == len(pages):
                 break
@@ -120,12 +128,12 @@ class BoardReader:
             try:
                 self._read_with(model, title, pages, texts)
             except Exception as exc:
-                detail = f": {_quota(exc)}" if getattr(exc, "status_code", None) == 429 else ""
+                detail = f": {_quota(exc)}" if (getattr(exc, "status_code", None) or 0) >= 429 else ""
                 print(f"[Boards] {model} stopped after {len(texts)} of {len(pages)} boards: "
                       f"{_kind(exc)}{detail}", flush=True)
             if len(texts) > before:
-                used = model
-        return texts, f"gemini/{used}" if used else ""
+                used.append(model)
+        return texts, ", ".join(f"gemini/{model}" for model in used)
 
     def _read_with(self, model: str, title: str, pages: list[dict], texts: dict[int, str]) -> None:
         for size in (BATCH, 1):                     # pages a batch skipped are asked for singly

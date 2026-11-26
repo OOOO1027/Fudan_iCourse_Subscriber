@@ -33,12 +33,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 2026-10-28, the lecture the extractor was built on: extraction only,
-        # as a check that nothing changed.  2026-11-18: read and summarised too.
+        # One entry per lecture.  skip_reading "1": extraction only, no vision
+        # requests.  probe "1": ask every vision model for the same two boards
+        # instead of running the stage.  693743 is 2026-10-28, the lecture the
+        # extractor was built on; 710074 is 2026-11-18.
         include:
-          - sub: "693743"
-            skip_reading: "1"
-            probe: "1"
+          - sub: "710074"
+            skip_reading: ""
+            probe: ""
     env:
       BOARD_COURSE_ID: "38985"
       BOARD_SUB_ID: ${{ matrix.sub }}

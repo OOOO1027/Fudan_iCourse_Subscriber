@@ -179,8 +179,11 @@ class StageTest(unittest.TestCase):
         self.assertEqual((scene.captures, scene.reopened().get("8")["status"]), (1, "pending"))
 
         later = Scene(self, count=10, directory=scene.dir)             # the next run
+        later.stage.reader.models = ["model-b"]                        # another model is answering now
         notes = later.stage.notes_for(object(), "100", "7", "课")
         self.assertEqual([n["n"] for n in notes], list(range(1, 11)))
+        self.assertEqual(notes[0]["by"], "gemini/model-a, gemini/model-b")
+        self.assertIn("识读型号：model-a, model-b。", board_stage.summary_with_boards(SUMMARY, notes))
         self.assertEqual((later.captures, later.reopened().get("7")["status"]), (0, "ok"))
         shown = [n for _, messages in later.vision.requests if not isinstance(messages[-1]["content"], str)
                  for part in messages[-1]["content"] if part["type"] == "text"

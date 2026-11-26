@@ -61,7 +61,9 @@ GUIDE = (
     "3. 不要单独列一节「板书内容」，把它自然地并入正文；笔记末尾会由系统另附板书记录。\n"
     "4. 板书上只有只言片语的地方（一个数、一个箭头、半行式子），含义以同一时段的讲解为准；"
     "讲解里找不到依据时照录原文，不要自行解释它的含义。\n"
-    "5. 标题层级的规定不变：只用 ###、####、#####，不要用 # 和 ##。\n\n"
+    "5. 标题层级的规定不变：只用 ###、####、#####，不要用 # 和 ##。\n"
+    "6. 板书上的数值结果，如果能用同一块板上的公式和给出的数值算出来，自己验算一遍；"
+    "验算结果和识读的数字不一致时，以验算为准，并注明板书上识读成了另一个数。\n\n"
 )
 
 RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
@@ -237,6 +239,13 @@ def prompt_with_boards(prompt_text: str, notes: list[dict] | None) -> str:
     return f"{GUIDE}{prompt_text}\n\n【板书识读（按书写时间排列）】\n{boards}"
 
 
+def _read_by(notes: list[dict]) -> str:
+    """Which models read these boards, for the record: they differ in how far
+    a handwritten digit can be trusted."""
+    names = notes[0].get("by", "").replace("gemini/", "")
+    return f"识读型号：{names}。" if names else ""
+
+
 def _third_level(summary: str) -> str:
     """Headings above ### brought down to ###.  The summariser is told not to
     use them, and did when it was given boards (dry run of 2026-11-22)."""
@@ -256,7 +265,7 @@ def summary_with_boards(summary: str, notes: list[dict] | None) -> str:
     summary = _third_level(summary)
     parts = [f"{RECORD_HEADING}\n\n以下是程序从回放中提取的 {len(notes)} 块板书，由模型识读成文字，"
              "按书写时间排列，供核对。识读可能有误，数字、上下标和分式以原图为准；[?] 是没认出来的地方。"
-             "原图已加密留存。"]
+             f"原图已加密留存。{_read_by(notes)}"]
     parts += [f"#### 板书 {n['n']}（{clock(n['first_ms'])}–{clock(n['last_ms'])}）\n\n{n['text']}"
               for n in notes]
     return summary.rstrip() + "\n\n" + "\n\n".join(parts) + "\n"
@@ -354,6 +363,7 @@ class BoardStage:
                      for meta, image in zip(manifest["pages"], images)]
             report, file = manifest["report"], entry["file"]
             have = {int(k): text for k, text in entry.get("texts", {}).items()}
+            readers = [r for r in entry.get("reader", "").split(", ") if r]
         elif attempts >= MAX_ATTEMPTS:        # the stored pages are gone and capturing again is used up
             return None
         else:
@@ -379,7 +389,7 @@ class BoardStage:
             file = self.store.put_pages(sub_id, {
                 "sub_id": sub_id, "course_id": course_id, "title": title, "report": report,
                 "pages": [{**page.meta(), "n": k + 1} for k, page in enumerate(pages)]}, images)
-            have = {}
+            have, readers = {}, []
             self.log(f"    [Boards] {sub_id}: {len(pages)} page(s); sampling "
                      f"{report['seconds']['sampling']}s, extracting {report['seconds']['extracting']}s.")
 
@@ -390,16 +400,17 @@ class BoardStage:
             "image": p.image, "first_ms": p.first_ms, "last_ms": p.last_ms,
             "context": speech_during(transcript, segments, p.first_ms, p.last_ms,
                                      report.get("duration_ms"))} for p in pages], have) if pages else ({}, "")
+        model = ", ".join(dict.fromkeys(readers + [r for r in model.split(", ") if r]))   # over all runs
         if len(texts) < len(pages):           # quota spent or models down: go on from here next run
             self.reader_down = True
-            self._set(sub_id, {**base, "status": "unread",
+            self._set(sub_id, {**base, "status": "unread", "reader": model,
                                     "texts": {str(k): text for k, text in texts.items()}})
             self.store.save()
             self.log(f"    [Boards] {sub_id}: {len(texts)} of {len(pages)} boards read; "
                      "the rest in a later run.")
             return None
         notes = [{"n": k + 1, "first_ms": page.first_ms, "last_ms": page.last_ms,
-                  "lost_ms": page.lost_ms, "text": texts[k]}
+                  "lost_ms": page.lost_ms, "text": texts[k], "by": model}
                  for k, page in enumerate(pages) if texts[k].strip() and texts[k].strip() != EMPTY]
         self._set(sub_id, {**base, "status": "ok", "reader": model, "in_summary": False,
                                 "notes": notes})
