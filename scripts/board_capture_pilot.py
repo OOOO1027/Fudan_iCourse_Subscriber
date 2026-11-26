@@ -293,7 +293,7 @@ def main():
                 from src.ai import bucketer
                 from src.ai.summarizer import Summarizer
                 prompt, mode = bucketer.assemble(transcript, None, ppt_pages)
-                prompt = board_stage.prompt_with_boards(prompt, notes)
+                prompt = board_stage.prompt_with_boards(prompt, notes, row.get("summary") or "")
                 t0 = time.time()
                 summary, model = Summarizer().summarize(title, prompt)
                 summary = board_stage.summary_with_boards(summary, notes)

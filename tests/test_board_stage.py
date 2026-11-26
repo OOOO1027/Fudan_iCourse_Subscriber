@@ -274,6 +274,9 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("#### 板书 3（1:06:40–1:08:20）\n\nREINFORCE", summary)
         self.assertEqual(board_stage.summary_with_boards(summary, self.NOTES), summary)
         self.assertEqual(board_stage.prompt_with_boards("PROMPT", []), "PROMPT")
+        again = board_stage.prompt_with_boards("PROMPT", self.NOTES, summary)   # a summary being rewritten
+        self.assertTrue(again.startswith("【已有笔记说明】"))
+        self.assertTrue(again.endswith("【已有笔记（没有用到板书）】\n" + SUMMARY))  # without its old record
 
     def test_headings_above_the_third_level_are_brought_down(self):
         text = "## 一\n\n### 二\n\n```python\n# comment\n## also code\n```\n\n# 三\n\n#hashtag"
@@ -313,7 +316,12 @@ class BackfillTest(unittest.TestCase):
         client = SimpleNamespace(get_course_detail=lambda course_id: {"title": "课", "lectures": lectures})
         db = SimpleNamespace(get_lecture=rows.get, get_done_ppt_pages=lambda sub_id: [],
                              update_summary=lambda sub_id, text, model: saved.update({sub_id: text}))
-        summarizer = SimpleNamespace(summarize=lambda title, prompt: (SUMMARY, "provider/model"))
+
+        def summarize(title, prompt):
+            self.assertIn("【已有笔记（没有用到板书）】\n" + SUMMARY, prompt)     # the old summary, to be kept
+            return SUMMARY, "provider/model"
+
+        summarizer = SimpleNamespace(summarize=summarize)
         scene.stage.backfill(client, db, summarizer)
         return saved
 

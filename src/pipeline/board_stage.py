@@ -66,6 +66,12 @@ GUIDE = (
     "验算结果和识读的数字不一致时，以验算为准，并注明板书上识读成了另一个数。\n\n"
 )
 
+KEEP = (
+    "【已有笔记说明】这节课此前已有一份没有用到板书的笔记，附在材料最后。新笔记是它的增订版："
+    "已有笔记里的每个知识点、推导、例子、数字和课程事项都必须保留，不得删减或一笔带过；"
+    "在此基础上并入板书内容，并订正已有笔记中与板书或录音不符的地方。篇幅应当比已有笔记长。\n\n"
+)
+
 RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
 
 
@@ -231,12 +237,21 @@ def speech_during(transcript, segments, first_ms, last_ms, duration_ms, limit=16
     return text
 
 
-def prompt_with_boards(prompt_text: str, notes: list[dict] | None) -> str:
+def prompt_with_boards(prompt_text: str, notes: list[dict] | None, previous: str = "") -> str:
+    """The summary prompt with the boards' readings.  `previous` is the summary
+    the lecture already has, when it is being rewritten: a rewrite from the
+    same material dropped things the first one had (2026-11-18: the reverse
+    process and its training objective), so the first one is given too, to be
+    kept."""
     if not notes:
         return prompt_text
     boards = "\n\n".join(f"[板书 {n['n']} @ {clock(n['first_ms'])}–{clock(n['last_ms'])}]\n{n['text']}"
                          for n in notes)
-    return f"{GUIDE}{prompt_text}\n\n【板书识读（按书写时间排列）】\n{boards}"
+    prompt = f"{GUIDE}{prompt_text}\n\n【板书识读（按书写时间排列）】\n{boards}"
+    previous = previous.split(RECORD_HEADING)[0].strip()
+    if previous:
+        prompt = (KEEP + prompt + "\n\n【已有笔记（没有用到板书）】\n" + previous)
+    return prompt
 
 
 def _read_by(notes: list[dict]) -> str:
@@ -481,7 +496,7 @@ class BoardStage:
                 if notes:
                     prompt, _ = bucketer.assemble(row["transcript"], None, db.get_done_ppt_pages(sub_id))
                     summary, model = summarizer.summarize(
-                        detail["title"], prompt_with_boards(prompt, notes))
+                        detail["title"], prompt_with_boards(prompt, notes, row["summary"]))
                     entry = self.store.get(sub_id)
                     if not entry.get("kept_summary"):    # the one written without boards, once
                         self.store.put_summary(sub_id, row["summary"], row.get("summary_model"))
