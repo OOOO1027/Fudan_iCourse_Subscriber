@@ -231,6 +231,21 @@ def probe(output, password):
         encrypt_bundle(review, output / "bundle.bin")
 
 
+def dump(output, subs):
+    """The summaries the database now holds for these lectures, to compare a
+    backfilled one with the summary it replaced.  Nothing else is run."""
+    from src.data.database import Database
+    db = Database(os.environ["BOARD_DB"])
+    with tempfile.TemporaryDirectory(prefix="board-dump-") as review:
+        review = Path(review)
+        for sub in subs:
+            row = db.get_lecture(sub.strip()) or {}
+            (review / f"summary-{sub.strip()}.md").write_text(row.get("summary") or "")
+            print(f"Lecture {sub}: summary {len(row.get('summary') or '')} chars by "
+                  f"{row.get('summary_model')}", flush=True)
+        encrypt_bundle(review, output / "bundle.bin")
+
+
 def main():
     output = Path(os.environ["BOARD_OUTPUT"])
     output.mkdir(parents=True, exist_ok=True)
@@ -238,6 +253,8 @@ def main():
     password = crypto_box.derive_new_password(config.STUDENT_ID, config.PASSWORD)
     if os.environ.get("BOARD_PROBE"):
         return probe(output, password)
+    if os.environ.get("BOARD_DUMP"):
+        return dump(output, os.environ["BOARD_DUMP"].split(","))
     title, row, ppt_pages = lecture_from_database()
     transcript = row.get("transcript") or ""
 

@@ -41,12 +41,15 @@ jobs:
           - sub: "710074"
             skip_reading: "1"
             probe: ""
+            dump: "714847,710074"
     env:
       BOARD_COURSE_ID: "38985"
       BOARD_SUB_ID: ${{ matrix.sub }}
       BOARD_SKIP_READING: ${{ matrix.skip_reading }}
       # Set to ask every vision model for the same two boards instead of running the stage.
       BOARD_PROBE: ${{ matrix.probe }}
+      # Set to lecture ids to fetch only their summaries from the database.
+      BOARD_DUMP: ${{ matrix.dump }}
 
     steps:
       - uses: actions/checkout@v4
