@@ -111,12 +111,11 @@ class BoardStore:
             {"sub_id": str(sub_id), "summary": summary, "summary_model": model},
             ensure_ascii=False).encode())
 
-    def load_pages(self, sub_id) -> tuple[dict, list[bytes]] | None:
-        """A lecture's stored pages: from this directory if they were written
-        in this run, else from the branch through board_branch.sh's scratch
+    def _read(self, stem: str) -> bytes | None:
+        """A stored file, decrypted: from this directory if it was written in
+        this run, else from the branch through board_branch.sh's scratch
         repository, which fetches the one file on demand."""
-        name = self.name(sub_id)
-        path = self.dir / f"{name}.enc"
+        path = self.dir / f"{stem}.enc"
         try:
             if path.exists():
                 blob = path.read_bytes()
@@ -124,9 +123,24 @@ class BoardStore:
                 repo = os.environ.get("BOARD_GIT_DIR") or os.path.join(
                     os.environ.get("RUNNER_TEMP", "/tmp"), "boards.git")
                 blob = subprocess.run(
-                    ["git", "--git-dir", repo, "show", f"boards:boards/{name}.enc"],
+                    ["git", "--git-dir", repo, "show", f"boards:boards/{stem}.enc"],
                     capture_output=True, timeout=300, check=True).stdout
-            return unpack(crypto_box.decrypt(blob, self.password))
+            return crypto_box.decrypt(blob, self.password)
+        except Exception:
+            return None
+
+    def load_pages(self, sub_id) -> tuple[dict, list[bytes]] | None:
+        plain = self._read(self.name(sub_id))
+        try:
+            return unpack(plain) if plain else None
+        except Exception:
+            return None
+
+    def load_summary(self, sub_id) -> str | None:
+        """The summary the lecture had before it was rewritten with boards."""
+        plain = self._read(f"{self.name(sub_id)}.summary")
+        try:
+            return json.loads(plain)["summary"] if plain else None
         except Exception:
             return None
 

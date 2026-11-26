@@ -21,6 +21,10 @@ from src.pipeline.board_store import BoardStore, StoreUnavailable
 
 PASSWORD = "test-password"
 SUMMARY = "### 复习优先级判断\n\n正文。\n\n### 第一部分\n\n更多正文。"
+# A rewrite that wrote the lecture and then the old summary after it.
+TWICE = "\n\n".join(f"### {title}\n\n正文。" for title in (
+    "复习优先级判断", "扩散模型的基本思想", "欧拉方法与数值采样", "布朗运动与维纳过程", "前向过程的设计", "逆向过程与学习目标",
+    "扩散模型的核心思想", "欧拉方法与数值模拟", "布朗运动与维纳过程", "前向过程的设计", "逆向过程与训练目标"))
 
 
 class Page(SimpleNamespace):
@@ -278,6 +282,11 @@ class SummaryTest(unittest.TestCase):
         self.assertTrue(again.startswith("【已有笔记说明】"))
         self.assertTrue(again.endswith("【已有笔记（没有用到板书）】\n" + SUMMARY))  # without its old record
 
+    def test_repeats(self):
+        self.assertTrue(board_stage.repeats(TWICE))
+        self.assertFalse(board_stage.repeats(SUMMARY))
+        self.assertFalse(board_stage.repeats(TWICE.split("### 扩散模型的核心思想")[0]))
+
     def test_headings_above_the_third_level_are_brought_down(self):
         text = "## 一\n\n### 二\n\n```python\n# comment\n## also code\n```\n\n# 三\n\n#hashtag"
         summary = board_stage.summary_with_boards(text, self.NOTES)
@@ -311,7 +320,7 @@ class SummaryTest(unittest.TestCase):
 
 
 class BackfillTest(unittest.TestCase):
-    def run_backfill(self, scene, lectures, rows):
+    def run_backfill(self, scene, lectures, rows, answers=None):
         saved = {}
         client = SimpleNamespace(get_course_detail=lambda course_id: {"title": "课", "lectures": lectures})
         db = SimpleNamespace(get_lecture=rows.get, get_done_ppt_pages=lambda sub_id: [],
@@ -319,7 +328,7 @@ class BackfillTest(unittest.TestCase):
 
         def summarize(title, prompt):
             self.assertIn("【已有笔记（没有用到板书）】\n" + SUMMARY, prompt)     # the old summary, to be kept
-            return SUMMARY, "provider/model"
+            return (answers.pop(0) if answers else SUMMARY), "provider/model"
 
         summarizer = SimpleNamespace(summarize=summarize)
         scene.stage.backfill(client, db, summarizer)
@@ -341,6 +350,29 @@ class BackfillTest(unittest.TestCase):
         self.assertEqual(sorted(self.run_backfill(scene, lectures, rows)), ["1"])
         self.assertEqual(self.run_backfill(scene, lectures, rows), {})
         self.assertEqual(scene.captures, 3)
+
+    def test_a_summary_that_covers_the_lecture_twice_is_rewritten(self):
+        lectures = [{"sub_id": 1, "date": "2026-10-14"}]
+        rows = {"1": {"summary": SUMMARY, "transcript": "speech " * 50}}
+        scene = Scene(self, backfill_per_run=1)
+        self.run_backfill(scene, lectures, rows)                    # rewritten once, the first summary kept
+        rows["1"]["summary"] = board_stage.summary_with_boards(TWICE, [  # as saved before this check existed
+            {"n": 1, "first_ms": 0, "last_ms": 1, "text": "x", "by": "m"}])
+        # Next run: found, redone against the first summary (not the broken one), saved.
+        saved = self.run_backfill(Scene(self, directory=scene.dir, backfill_per_run=1), lectures, rows,
+                                  [TWICE, SUMMARY])
+        self.assertFalse(board_stage.repeats(saved["1"]))
+        self.assertTrue(scene.reopened().get("1")["in_summary"])
+
+    def test_a_rewrite_that_keeps_repeating_is_not_saved(self):
+        lectures = [{"sub_id": 1, "date": "2026-10-14"}]
+        rows = {"1": {"summary": SUMMARY, "transcript": "speech " * 50}}
+        scene = Scene(self, backfill_per_run=1)
+        for run in range(4):
+            stage = Scene(self, directory=scene.dir, backfill_per_run=1)
+            self.assertEqual(self.run_backfill(stage, lectures, rows, [TWICE, TWICE]), {})
+        entry = scene.reopened().get("1")
+        self.assertEqual((entry["in_summary"], entry["rewrites"]), (False, 3))   # given up after three runs
 
     def test_older_lectures_are_left_alone_by_default(self):
         scene = Scene(self)

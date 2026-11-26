@@ -21,6 +21,7 @@ boards failed gets its summary without them and is tried again by backfill().
 """
 from __future__ import annotations
 
+import difflib
 import io
 import json
 import re
@@ -69,7 +70,9 @@ GUIDE = (
 KEEP = (
     "【已有笔记说明】这节课此前已有一份没有用到板书的笔记，附在材料最后。新笔记是它的增订版："
     "已有笔记里的每个知识点、推导、例子、数字和课程事项都必须保留，不得删减或一笔带过；"
-    "在此基础上并入板书内容，并订正已有笔记中与板书或录音不符的地方。篇幅应当比已有笔记长。\n\n"
+    "在此基础上并入板书内容，并订正已有笔记中与板书或录音不符的地方。篇幅应当比已有笔记长。"
+    "只输出一份完整的笔记，按课堂顺序把两份材料合并在一起：不要先写一遍新笔记、再把已有笔记接在后面，"
+    "同一个主题只出现一次。\n\n"
 )
 
 RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
@@ -252,6 +255,29 @@ def prompt_with_boards(prompt_text: str, notes: list[dict] | None, previous: str
     if previous:
         prompt = (KEEP + prompt + "\n\n【已有笔记（没有用到板书）】\n" + previous)
     return prompt
+
+
+def _heading_keys(summary: str) -> list[str]:
+    keys = []
+    for line in summary.split(RECORD_HEADING)[0].splitlines():
+        match = re.match(r"^#{3,5}\s+(.*)", line)
+        if match:
+            key = re.sub(r"[\s$`*【】\\{}^_：:、，,（）()\-–—]", "", match.group(1)).lower()
+            if len(key) >= 4:
+                keys.append(key)
+    return keys
+
+
+def repeats(summary: str, need: int = 4) -> bool:
+    """Whether a summary covers the lecture twice.  A rewrite given the old
+    summary to keep once wrote the new one and then the old one after it
+    (2026-11-18): seven of its 57 headings had a near twin, against at most
+    one in every other summary on hand."""
+    seen, twins = [], 0
+    for key in _heading_keys(summary):
+        twins += any(difflib.SequenceMatcher(None, key, other).ratio() >= 0.75 for other in seen)
+        seen.append(key)
+    return twins >= need
 
 
 def _read_by(notes: list[dict]) -> str:
@@ -444,7 +470,7 @@ class BoardStage:
             self.log(f"    [Boards] could not record {sub_id} as summarised: {type(exc).__name__}")
 
     def _owed(self, entry: dict) -> bool:
-        return not entry.get("in_summary") and not (
+        return not entry.get("in_summary") and entry.get("rewrites", 0) < MAX_ATTEMPTS and not (
             entry["status"] == "failed" and entry["attempts"] >= MAX_ATTEMPTS)
 
     def backfill(self, client, db, summarizer, check_session=None) -> None:
@@ -481,7 +507,10 @@ class BoardStage:
                 entry = self._usable(sub_id)
                 if entry is None and older >= self.backfill_per_run:
                     continue                  # from before boards were on: only when asked for
-                if entry is not None and not self._owed(entry):
+                redo = bool(entry and entry.get("in_summary") and repeats(row["summary"]))
+                if entry is not None and not self._owed(entry) and not redo:
+                    continue
+                if redo and entry.get("rewrites", 0) >= MAX_ATTEMPTS:
                     continue
                 if self.reader_down or time.monotonic() - self.started > self.deadline_s:
                     return
@@ -494,14 +523,35 @@ class BoardStage:
                 if notes is None:
                     continue
                 if notes:
-                    prompt, _ = bucketer.assemble(row["transcript"], None, db.get_done_ppt_pages(sub_id))
-                    summary, model = summarizer.summarize(
-                        detail["title"], prompt_with_boards(prompt, notes, row["summary"]))
                     entry = self.store.get(sub_id)
                     if not entry.get("kept_summary"):    # the one written without boards, once
                         self.store.put_summary(sub_id, row["summary"], row.get("summary_model"))
                         self.store.set(sub_id, {**entry, "kept_summary": True})
                         self.store.save()
+                        original = row["summary"]
+                    else:                                # rewritten before: keep to the first one
+                        original = self.store.load_summary(sub_id)
+                        if original is None:
+                            self.log(f"    [Boards] {sub_id}: the first summary could not be read back.")
+                            continue
+                    prompt, _ = bucketer.assemble(row["transcript"], None, db.get_done_ppt_pages(sub_id))
+                    prompt = prompt_with_boards(prompt, notes, original)
+                    for attempt in (1, 2):
+                        summary, model = summarizer.summarize(detail["title"], prompt)
+                        if not repeats(summary):
+                            break
+                        self.log(f"    [Boards] {sub_id}: the rewrite covers the lecture twice "
+                                 f"(attempt {attempt}).")
+                    entry = self.store.get(sub_id)
+                    if repeats(summary):                 # leave the summary as it is; another run tries
+                        self._set(sub_id, {**entry, "in_summary": False,
+                                           "rewrites": entry.get("rewrites", 0) + 1})
+                        self.store.save()
+                        continue
                     db.update_summary(sub_id, summary_with_boards(summary, notes), model)
-                    self.log(f"    [Boards] {sub_id}: summary rewritten with {len(notes)} board(s) by {model}.")
+                    self.log(f"    [Boards] {sub_id}: summary rewritten with {len(notes)} board(s) by {model}"
+                             f"{' (it had covered the lecture twice)' if redo else ''}.")
+                    if redo:
+                        self._set(sub_id, {**entry, "in_summary": False})
+                        self.store.save()
                 self.mark_in_summary(sub_id)
